@@ -155,10 +155,10 @@ class ReaderSettings extends ChangeNotifier {
     if (themeIndex != null) this.themeIndex = themeIndex;
     if (scrollMode != null) this.scrollMode = scrollMode;
     final s = StorageService.instance;
-    await s.putSetting('fontSize', fontSize);
-    await s.putSetting('lineHeight', lineHeight);
-    await s.putSetting('themeIndex', themeIndex);
-    await s.putSetting('scrollMode', scrollMode);
+    if (fontSize != null) await s.putSetting('fontSize', fontSize);
+    if (lineHeight != null) await s.putSetting('lineHeight', lineHeight);
+    if (themeIndex != null) await s.putSetting('themeIndex', themeIndex);
+    if (scrollMode != null) await s.putSetting('scrollMode', scrollMode);
     notifyListeners();
   }
 

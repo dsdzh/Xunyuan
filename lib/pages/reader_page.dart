@@ -625,7 +625,10 @@ class _ReaderPageState extends State<ReaderPage> {
                 min: 14,
                 max: 32,
                 divisions: 18,
-                onChanged: (v) => settings.set(fontSize: v),
+                onChanged: (v) {
+                  settings.set(fontSize: v);
+                  setSheet(() {});
+                },
               ),
               Text('行距（${settings.lineHeight.toStringAsFixed(1)}）', style: const TextStyle(fontWeight: FontWeight.bold)),
               Slider(
@@ -633,7 +636,10 @@ class _ReaderPageState extends State<ReaderPage> {
                 min: 1.2,
                 max: 2.4,
                 divisions: 12,
-                onChanged: (v) => settings.set(lineHeight: v),
+                onChanged: (v) {
+                  settings.set(lineHeight: v);
+                  setSheet(() {});
+                },
               ),
               const Text('主题', style: TextStyle(fontWeight: FontWeight.bold)),
               const SizedBox(height: 10),
@@ -642,7 +648,10 @@ class _ReaderPageState extends State<ReaderPage> {
                 children: [
                   for (var i = 0; i < ReaderSettings.themes.length; i++)
                     GestureDetector(
-                      onTap: () => settings.set(themeIndex: i),
+                      onTap: () {
+                        settings.set(themeIndex: i);
+                        setSheet(() {});
+                      },
                       child: Container(
                         width: 46,
                         height: 46,
