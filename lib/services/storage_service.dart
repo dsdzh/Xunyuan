@@ -117,6 +117,33 @@ class StorageService {
 
   Future<void> removeBook(String key) => _books.delete(key);
 
+  // ---------- 浏览记录 ----------
+  static const _historyKey = 'readHistory';
+
+  List<Map<String, dynamic>> get readHistory {
+    final v = _settings.get(_historyKey);
+    if (v is! String) return [];
+    try {
+      final j = jsonDecode(v);
+      if (j is List) return j.whereType<Map>().map((e) => e.cast<String, dynamic>()).toList();
+    } catch (_) {}
+    return [];
+  }
+
+  Future<void> putReadHistory(Map<String, dynamic> entry) async {
+    final list = readHistory..removeWhere((e) => e['key'] == entry['key']);
+    list.insert(0, entry);
+    if (list.length > 100) list.removeRange(100, list.length);
+    await _settings.put(_historyKey, jsonEncode(list));
+  }
+
+  Future<void> removeReadHistory(String key) async {
+    final list = readHistory..removeWhere((e) => e['key'] == key);
+    await _settings.put(_historyKey, jsonEncode(list));
+  }
+
+  Future<void> clearReadHistory() => _settings.delete(_historyKey);
+
   // ---------- 章节缓存 ----------
   String? getCachedChapter(String chapterKey) => _cache.get(chapterKey);
 

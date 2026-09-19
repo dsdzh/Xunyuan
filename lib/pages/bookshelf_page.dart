@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
 import '../widgets/book_tile.dart';
+import 'history_page.dart';
 import 'reader_page.dart';
 import 'search_page.dart';
 
@@ -20,6 +21,11 @@ class BookshelfPage extends StatelessWidget {
         title: const Text('书架'),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: '浏览记录',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HistoryPage())),
+          ),
           IconButton(
             icon: const Icon(Icons.cleaning_services_outlined),
             tooltip: '清空章节缓存',
@@ -63,20 +69,7 @@ class BookshelfPage extends StatelessWidget {
                     padding: const EdgeInsets.only(right: 24),
                     child: const Icon(Icons.delete, color: Colors.white),
                   ),
-                  confirmDismiss: (_) async {
-                    return await showDialog<bool>(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            title: const Text('移出书架'),
-                            content: Text('确定将《${book['name']}》移出书架吗？'),
-                            actions: [
-                              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('移除')),
-                            ],
-                          ),
-                        ) ??
-                        false;
-                  },
+                  confirmDismiss: (_) => _confirmRemove(context, shelf, book),
                   onDismissed: (_) => shelf.remove(book['key'].toString()),
                   child: BookTile(
                     name: (book['name'] ?? '').toString(),
@@ -84,6 +77,7 @@ class BookshelfPage extends StatelessWidget {
                     coverUrl: (book['coverUrl'] ?? '').toString(),
                     subtitle: (book['lastChapter'] ?? '').toString(),
                     progress: _progressText(book),
+                    onLongPress: () => _showBookMenu(context, shelf, book),
                     onTap: () {
                       if (source == null) {
                         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('书源已删除，无法阅读')));
@@ -98,6 +92,50 @@ class BookshelfPage extends StatelessWidget {
               },
             ),
     );
+  }
+
+  Future<bool> _confirmRemove(BuildContext context, ShelfState shelf, Map<String, dynamic> book) async {
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('移出书架'),
+            content: Text('确定将《${book['name']}》移出书架吗？'),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('移除')),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<void> _showBookMenu(BuildContext context, ShelfState shelf, Map<String, dynamic> book) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.menu_book_outlined),
+              title: Text((book['name'] ?? '').toString()),
+              subtitle: Text((book['author'] ?? '').toString()),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: const Text('移出书架', style: TextStyle(color: Colors.red)),
+              onTap: () => Navigator.pop(ctx, 'remove'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'remove' && context.mounted) {
+      if (await _confirmRemove(context, shelf, book)) {
+        await shelf.remove(book['key'].toString());
+      }
+    }
   }
 
   String _progressText(Map<String, dynamic> book) {

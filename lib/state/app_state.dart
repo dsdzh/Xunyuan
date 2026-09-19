@@ -85,9 +85,11 @@ class SourceState extends ChangeNotifier {
 
 class ShelfState extends ChangeNotifier {
   List<Map<String, dynamic>> books = [];
+  List<Map<String, dynamic>> history = [];
 
   Future<void> load() async {
     books = StorageService.instance.shelf;
+    history = StorageService.instance.readHistory;
     notifyListeners();
   }
 
@@ -160,6 +162,35 @@ class ShelfState extends ChangeNotifier {
 
   bool isInShelf(String name, String author, String sourceUrl) =>
       StorageService.instance.getBook(StorageService.bookKey(name, author, sourceUrl)) != null;
+
+  /// 退出阅读时记录浏览历史；书在书架则同步书架进度。
+  Future<void> recordRead(Map<String, dynamic> book, int chapterIndex, String chapterTitle, double progress) async {
+    var entry = Map<String, dynamic>.of(book);
+    final key = entry['key']?.toString() ??
+        StorageService.bookKey('${entry['name'] ?? ''}', '${entry['author'] ?? ''}', '${entry['sourceUrl'] ?? ''}');
+    entry['key'] = key;
+    if (StorageService.instance.getBook(key) != null) {
+      await updateProgress(key, chapterIndex, chapterTitle, progress);
+      entry = StorageService.instance.getBook(key)!;
+    }
+    entry['durChapterIndex'] = chapterIndex;
+    entry['lastReadTime'] = DateTime.now().millisecondsSinceEpoch;
+    await StorageService.instance.putReadHistory(entry);
+    history = StorageService.instance.readHistory;
+    notifyListeners();
+  }
+
+  Future<void> removeHistory(String key) async {
+    await StorageService.instance.removeReadHistory(key);
+    history = StorageService.instance.readHistory;
+    notifyListeners();
+  }
+
+  Future<void> clearHistory() async {
+    await StorageService.instance.clearReadHistory();
+    history = [];
+    notifyListeners();
+  }
 }
 
 class ReaderSettings extends ChangeNotifier {
@@ -175,6 +206,9 @@ class ReaderSettings extends ChangeNotifier {
   double lineHeight = 1.6;
   int themeIndex = 0;
   bool scrollMode = true; // true 滚动 false 翻页
+  int pageAnimIndex = 0; // 0 仿真 1 覆盖 2 平移
+
+  static const pageAnims = ['仿真', '覆盖', '平移'];
 
   Future<void> load() async {
     final s = StorageService.instance;
@@ -182,19 +216,22 @@ class ReaderSettings extends ChangeNotifier {
     lineHeight = (s.setting('lineHeight', def: 1.6) as num).toDouble();
     themeIndex = s.setting('themeIndex', def: 0) as int;
     scrollMode = s.setting('scrollMode', def: true) as bool;
+    pageAnimIndex = s.setting('pageAnimIndex', def: 0) as int;
     notifyListeners();
   }
 
-  Future<void> set({double? fontSize, double? lineHeight, int? themeIndex, bool? scrollMode}) async {
+  Future<void> set({double? fontSize, double? lineHeight, int? themeIndex, bool? scrollMode, int? pageAnimIndex}) async {
     if (fontSize != null) this.fontSize = fontSize;
     if (lineHeight != null) this.lineHeight = lineHeight;
     if (themeIndex != null) this.themeIndex = themeIndex;
     if (scrollMode != null) this.scrollMode = scrollMode;
+    if (pageAnimIndex != null) this.pageAnimIndex = pageAnimIndex;
     final s = StorageService.instance;
     if (fontSize != null) await s.putSetting('fontSize', fontSize);
     if (lineHeight != null) await s.putSetting('lineHeight', lineHeight);
     if (themeIndex != null) await s.putSetting('themeIndex', themeIndex);
     if (scrollMode != null) await s.putSetting('scrollMode', scrollMode);
+    if (pageAnimIndex != null) await s.putSetting('pageAnimIndex', pageAnimIndex);
     notifyListeners();
   }
 

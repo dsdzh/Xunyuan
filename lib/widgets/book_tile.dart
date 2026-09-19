@@ -8,6 +8,7 @@ class BookTile extends StatelessWidget {
   final String? subtitle;
   final String? progress;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final Widget? trailing;
 
   const BookTile({
@@ -18,6 +19,7 @@ class BookTile extends StatelessWidget {
     this.subtitle,
     this.progress,
     this.onTap,
+    this.onLongPress,
     this.trailing,
   });
 
@@ -25,6 +27,7 @@ class BookTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         child: Row(
