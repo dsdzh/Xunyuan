@@ -76,13 +76,20 @@ class _ReaderPageState extends State<ReaderPage> {
     super.dispose();
   }
 
-  Future<void> _loadToc() async {
+  Future<void> _loadToc({bool force = false}) async {
     setState(() {
       _loadingToc = true;
       _error = null;
     });
     try {
-      final chapters = await _engine.toc((widget.book['tocUrl'] ?? widget.book['bookUrl'] ?? '').toString());
+      final tocUrl = (widget.book['tocUrl'] ?? widget.book['bookUrl'] ?? '').toString();
+      var chapters = force ? null : StorageService.instance.getCachedToc(tocUrl);
+      if (chapters == null || chapters.isEmpty) {
+        chapters = await _engine.toc(tocUrl);
+        if (chapters.isNotEmpty) {
+          unawaited(StorageService.instance.putCachedToc(tocUrl, chapters));
+        }
+      }
       if (!mounted) return;
       if (chapters.isEmpty) {
         setState(() {
@@ -92,7 +99,7 @@ class _ReaderPageState extends State<ReaderPage> {
         return;
       }
       setState(() {
-        _chapters = chapters;
+        _chapters = chapters!;
         _loadingToc = false;
       });
       _prepare();
@@ -119,7 +126,9 @@ class _ReaderPageState extends State<ReaderPage> {
 
   Future<String> _chapterContent(int idx) async {
     final chapter = _chapters[idx];
-    final cacheKey = '${widget.source.bookSourceUrl}::${chapter.url}';
+    // 缓存键带上书籍标识与章节序号，避免同书源不同书、或 url 为空的章节互相覆盖
+    final bookId = widget.book['key']?.toString() ?? widget.source.bookSourceUrl;
+    final cacheKey = 'ch::$bookId::$idx::${chapter.url}';
     final cached = StorageService.instance.getCachedChapter(cacheKey);
     if (cached != null) return cached;
     final content = await _engine.content(chapter.url, title: chapter.title);
@@ -294,7 +303,7 @@ class _ReaderPageState extends State<ReaderPage> {
                       children: [
                         Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: fg)),
                         const SizedBox(height: 16),
-                        FilledButton(onPressed: _loadToc, child: const Text('重试')),
+                        FilledButton(onPressed: () => _loadToc(force: true), child: const Text('重试')),
                       ],
                     ),
                   ),
@@ -442,11 +451,24 @@ class _ReaderPageState extends State<ReaderPage> {
     setState(() => _readPage = target);
   }
 
+  // _paginate 记忆化：段落列表 / 字号 / 行距 / 页面尺寸任一变化才重算
+  List<String>? _pagesCache;
+  List<String>? _pagesSrc;
+  double _pagesKey1 = -1, _pagesKey2 = -1, _pagesKey3 = -1, _pagesKey4 = -1;
+
   List<String> _paginate({
     required List<String> chapterParagraphs,
     required BoxConstraints constraints,
     required ReaderSettings settings,
   }) {
+    if (_pagesCache != null &&
+        identical(_pagesSrc, chapterParagraphs) &&
+        _pagesKey1 == settings.fontSize &&
+        _pagesKey2 == settings.lineHeight &&
+        _pagesKey3 == constraints.maxWidth &&
+        _pagesKey4 == constraints.maxHeight) {
+      return _pagesCache!;
+    }
     final pageWidth = constraints.maxWidth;
     final pageHeight = constraints.maxHeight - settings.fontSize * 2.5;
     final style = TextStyle(fontSize: settings.fontSize, height: settings.lineHeight);
@@ -474,6 +496,12 @@ class _ReaderPageState extends State<ReaderPage> {
     }
     if (current.isNotEmpty) pages.add(current.join('\n\n'));
     if (pages.isEmpty) pages.add('　');
+    _pagesCache = pages;
+    _pagesSrc = chapterParagraphs;
+    _pagesKey1 = settings.fontSize;
+    _pagesKey2 = settings.lineHeight;
+    _pagesKey3 = constraints.maxWidth;
+    _pagesKey4 = constraints.maxHeight;
     return pages;
   }
 

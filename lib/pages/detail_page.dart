@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/book_source_engine.dart';
 import '../models/book_source.dart';
+import '../services/storage_service.dart';
 import '../state/app_state.dart';
 import 'reader_page.dart';
 
@@ -29,7 +32,7 @@ class _DetailPageState extends State<DetailPage> {
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool force = false}) async {
     setState(() {
       _loading = true;
       _error = null;
@@ -37,11 +40,20 @@ class _DetailPageState extends State<DetailPage> {
     try {
       final detail = await _engine.bookInfo(widget.result.bookUrl,
           name: widget.result.name, author: widget.result.author);
-      final chapters = await _engine.toc(detail.tocUrl);
+      List<Chapter>? chapters;
+      if (!force) {
+        chapters = StorageService.instance.getCachedToc(detail.tocUrl);
+      }
+      if (chapters == null || chapters.isEmpty) {
+        chapters = await _engine.toc(detail.tocUrl);
+        if (chapters.isNotEmpty) {
+          unawaited(StorageService.instance.putCachedToc(detail.tocUrl, chapters));
+        }
+      }
       if (!mounted) return;
       setState(() {
         _detail = detail;
-        _chapters = chapters;
+        _chapters = chapters!;
         _loading = false;
       });
     } catch (e) {
@@ -97,7 +109,7 @@ class _DetailPageState extends State<DetailPage> {
                   ),
                 )
               : RefreshIndicator(
-                  onRefresh: _load,
+                  onRefresh: () => _load(force: true),
                   child: ListView(
                     children: [
                       Padding(

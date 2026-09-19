@@ -29,4 +29,29 @@ void main() {
     final r = RuleEngine.getString(html, 'class.missing@text;;class.other@text');
     expect(r, 'x');
   });
+
+  test('CSS 伪类原生回退（nth-child 按 Legado 1 起算）', () {
+    const html = '<ul><li>甲</li><li>乙</li><li>丙</li></ul>';
+    expect(RuleEngine.getString(html, 'tag.li:nth-child(2)@text'), '乙');
+    expect(RuleEngine.getString(html, 'tag.li:nth-child(1)@text'), '甲');
+    expect(RuleEngine.getString(html, 'tag.li:last-child@text'), '丙');
+  });
+
+  test('CSS 属性选择器原生回退', () {
+    const html = '<div><a href="/x/1.html">一</a><a>二</a></div>';
+    final r = RuleEngine.getStringList(html, 'tag.a[href]@text');
+    expect(r, ['一']);
+  });
+
+  test('引号不配对时 ;; 回退仍可拆分', () {
+    const html = '<p class="hit">正文它\'s here</p><p class="fb">兜底</p>';
+    final r = RuleEngine.getStringList(html, "text.它's here&&class.hit@text;;class.fb@text");
+    expect(r.first.contains('它'), true);
+  });
+
+  test('[n] 下标与 [attr] 属性选择器区分', () {
+    const html = '<ul><li>甲</li><li>乙</li></ul>';
+    expect(RuleEngine.getString(html, 'tag.li[0]@text'), '甲');
+    expect(RuleEngine.getString(html, 'tag.li[last]@text'), '乙');
+  });
 }

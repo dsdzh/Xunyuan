@@ -31,6 +31,7 @@ class _SearchPageState extends State<SearchPage> {
   final List<SourceGroupResult> _results = [];
   Set<String> _selectedUrls = {};
   final Set<String> _seenUrls = {};
+  int _searchGen = 0;
 
   @override
   void initState() {
@@ -129,17 +130,19 @@ class _SearchPageState extends State<SearchPage> {
       return;
     }
     setState(() {
+      _searchGen++;
       _results
         ..clear()
         ..addAll(sources.map(SourceGroupResult.new));
     });
 
+    final gen = _searchGen;
     for (final group in _results) {
-      unawaited(_searchOne(group, key));
+      unawaited(_searchOne(group, key, gen));
     }
   }
 
-  Future<void> _searchOne(SourceGroupResult group, String key) async {
+  Future<void> _searchOne(SourceGroupResult group, String key, int gen) async {
     final engine = BookSourceEngine(group.source);
     try {
       final books = await engine.search(key).timeout(const Duration(seconds: 25));
@@ -148,6 +151,7 @@ class _SearchPageState extends State<SearchPage> {
       group.error = e.toString();
     }
     group.loading = false;
+    if (gen != _searchGen) return; // 新一轮搜索已开始，丢弃过期结果
     if (mounted) setState(() {});
     if (group.books.isNotEmpty && group.source.enabled) {
       // 记录成功书源次序 —— 简单实现：不重排

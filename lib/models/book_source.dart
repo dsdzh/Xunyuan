@@ -202,6 +202,7 @@ class ExploreRule {
 }
 
 class TocRule {
+  final String chapterList;
   final String chapterName;
   final String chapterUrl;
   final String formatJs;
@@ -210,6 +211,7 @@ class TocRule {
   final String isVip;
 
   TocRule({
+    this.chapterList = '',
     this.chapterName = '',
     this.chapterUrl = '',
     this.formatJs = '',
@@ -219,6 +221,7 @@ class TocRule {
   });
 
   factory TocRule.fromJson(Map<String, dynamic> j) => TocRule(
+        chapterList: (j['chapterList'] ?? '').toString(),
         chapterName: (j['chapterName'] ?? '').toString(),
         chapterUrl: (j['chapterUrl'] ?? '').toString(),
         formatJs: (j['formatJs'] ?? '').toString(),

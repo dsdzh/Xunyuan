@@ -81,7 +81,8 @@ class HttpClient {
     }
   }
 
-  Future<PageResponse> post(String url, {Object? body, Map<String, String>? headers, String? contentType}) async {
+  Future<PageResponse> post(String url,
+      {Object? body, Map<String, String>? headers, String? contentType, String? charsetHint}) async {
     final options = Options(headers: {
       'User-Agent': defaultUA,
       'Cookie': cookies.headerFor(url),
@@ -93,7 +94,7 @@ class HttpClient {
     final data = resp.data;
     return PageResponse(
       decode(data is List<int> ? data : utf8.encode(data?.toString() ?? ''),
-          contentType: resp.headers.value(Headers.contentTypeHeader)),
+          contentType: resp.headers.value(Headers.contentTypeHeader), hint: charsetHint),
       resp.statusCode ?? 0,
       resp.realUri.toString(),
     );
@@ -132,6 +133,15 @@ class HttpClient {
       } catch (_) {
         return utf8.decode(bytes, allowMalformed: true);
       }
+    }
+  }
+
+  /// 表单字符串按 GBK 编码为请求体字节
+  static List<int> gbkEncode(String s) {
+    try {
+      return gbk.encode(s);
+    } catch (_) {
+      return utf8.encode(s);
     }
   }
 }

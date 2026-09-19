@@ -101,25 +101,30 @@ class BookSourceEngine {
     return b.replace(pathSegments: pathSegs).toString();
   }
 
-  /// 解析搜索 URL 模板：`url{key}...`，或 `url&&{jsonbody}`。
-  /// 返回 (最终 url, postBody?)
-  ({String url, String? body, String? contentType}) _buildSearchUrl(String key, int page) {
-    var tpl = source.searchUrl ?? '';
-    if (tpl.isEmpty) return (url: '', body: null, contentType: null);
+  /// 解析 URL 模板：支持 `url{key}`、`url&&{opts}` 与真源最常见的 `url,{opts}` 单引号写法。
+  /// opts 字段：body / method / charset / contentType / headers。
+  /// 返回 (最终 url, 请求参数)。`@js:` 或整体被 `<js>` 包裹时返回空 url（v1 不执行 JS）。
+  ({
+    String url,
+    String? body,
+    String? method,
+    String? contentType,
+    String? charset,
+    Map<String, String> headers,
+  }) _buildRequest(String tplRaw, {String? key, int page = 1}) {
+    const empty = (url: '', body: null, method: null, contentType: null, charset: null, headers: <String, String>{});
+    var tpl = tplRaw.trim();
+    if (tpl.isEmpty || tpl.startsWith('@js:')) return empty;
+    tpl = tpl.replaceAll(RegExp(r'<js>[\s\S]*?</js>'), '').trim();
+    if (tpl.isEmpty) return empty;
 
-    // 拆分 `&&` 后的选项（POST body / headers）
-    String? bodyTemplate;
-    final amp = _findOptionsSplit(tpl);
-    if (amp != null) {
-      bodyTemplate = tpl.substring(amp + 2).trim();
-      tpl = tpl.substring(0, amp).trim();
-    }
-
-    final encodedKey = Uri.encodeComponent(key);
     String substitute(String s) {
-      s = s.replaceAll('{key}', encodedKey).replaceAll('{{key}}', encodedKey);
-      s = s.replaceAll('{bookName}', Uri.encodeComponent(key));
-      // 页码：{page} 或 {{page}}；`<n>` 紧跟表示步长
+      if (key != null) {
+        final encodedKey = Uri.encodeComponent(key);
+        // 先替换 {{key}}，否则 {{key}} 会残留花括号
+        s = s.replaceAll('{{key}}', encodedKey).replaceAll('{key}', encodedKey);
+        s = s.replaceAll('{bookName}', encodedKey);
+      }
       s = s.replaceAllMapped(RegExp(r'\{\{?page\}?\}(?:<(\d+)>)?'), (m) {
         final step = int.tryParse(m.group(1) ?? '') ?? 1;
         return (1 + (page - 1) * step).toString();
@@ -128,41 +133,128 @@ class BookSourceEngine {
       return s;
     }
 
-    final url = _abs(source.bookSourceUrl, substitute(tpl));
-    if (bodyTemplate != null && bodyTemplate.startsWith('{')) {
-      try {
-        final opt = jsonDecode(substitute(bodyTemplate.replaceAll("'", '"'))) as Map<String, dynamic>;
-        final body = opt['body'];
-        final ct = opt['contentType'] as String?;
-        if (body != null) {
-          return (url: url, body: body is String ? body : jsonEncode(body), contentType: ct);
-        }
-      } catch (_) {}
+    String? optText;
+    final opts = _findOptions(tpl);
+    if (opts != null) {
+      optText = tpl.substring(opts.braceStart);
+      tpl = tpl.substring(0, opts.urlEnd).trim();
     }
-    return (url: url, body: null, contentType: null);
+
+    final url = _abs(source.bookSourceUrl, substitute(tpl));
+    if (optText == null) return (url: url, body: null, method: null, contentType: null, charset: null, headers: const {});
+
+    final opt = _parseLegadoOptions(substitute(optText));
+    return (
+      url: url,
+      body: opt.body,
+      method: opt.method,
+      contentType: opt.contentType,
+      charset: opt.charset,
+      headers: opt.headers,
+    );
   }
 
-  /// 找到 url 部分与其 `&&` 选项分隔点（选项以 { 开头才算）
-  int? _findOptionsSplit(String tpl) {
-    var idx = tpl.indexOf('&&');
-    while (idx >= 0) {
-      final rest = tpl.substring(idx + 2).trim();
-      if (rest.startsWith('{')) return idx;
-      idx = tpl.indexOf('&&', idx + 2);
+  /// 找到 `,{'k':` / `&&{'k':` 形态选项的起点（引号内、括号内不匹配）
+  ({int urlEnd, int braceStart})? _findOptions(String s) {
+    var depth = 0;
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (c == '{' || c == '[' || c == '(') {
+        depth++;
+        continue;
+      }
+      if (c == '}' || c == ']' || c == ')') {
+        depth--;
+        continue;
+      }
+      if (depth != 0) continue;
+      final isAmp = c == '&' && i + 1 < s.length && s[i + 1] == '&';
+      if (c != ',' && !isAmp) continue;
+      var j = i + (isAmp ? 2 : 1);
+      while (j < s.length && (s[j] == ' ' || s[j] == '\t')) {
+        j++;
+      }
+      if (j + 1 < s.length && s[j] == '{' && (s[j + 1] == "'" || s[j + 1] == '"')) {
+        return (urlEnd: i, braceStart: j);
+      }
     }
     return null;
   }
 
-  Future<List<SearchBook>> search(String key, {int page = 1}) async {
-    final built = _buildSearchUrl(key, page);
-    if (built.url.isEmpty) return [];
-    PageResponse resp;
-    if (built.body != null) {
-      resp = await HttpClient.instance.post(built.url,
-          body: built.body, headers: _headers, contentType: built.contentType ?? 'application/json');
-    } else {
-      resp = await HttpClient.instance.get(built.url, headers: _headers);
+  /// 宽松解析 Legado 选项对象 `{'k':'v','headers':{'H':'V'}}`（单/双引号均可）
+  static ({String? body, String? method, String? charset, String? contentType, Map<String, String> headers})
+      _parseLegadoOptions(String obj) {
+    final stringPairPatterns = [
+      RegExp(r"'([^']+)'\s*:\s*'((?:[^'\\]|\\.)*)'"),
+      RegExp(r'"([^"]+)"\s*:\s*"((?:[^"\\]|\\.)*)"'),
+    ];
+    String? body, method, charset, contentType;
+    final headers = <String, String>{};
+
+    // headers 是嵌套对象，先单独取出（并从文本中剔除避免被字符串对正则误匹配）
+    final hm = RegExp(r'''['"]?headers['"]?\s*:\s*(\{[^{}]*\})''').firstMatch(obj);
+    if (hm != null) {
+      obj = obj.replaceRange(hm.start, hm.end, '');
+      final inner = hm.group(1)!;
+      for (final re in [
+        RegExp(r"'([^']+)'\s*:\s*'([^']*)'"),
+        RegExp(r'"([^"]+)"\s*:\s*"([^"]*)"'),
+      ]) {
+        for (final m in re.allMatches(inner)) {
+          headers[m.group(1)!] = m.group(2)!;
+        }
+      }
     }
+
+    for (final re in stringPairPatterns) {
+      for (final m in re.allMatches(obj)) {
+        var v = m.group(2)!;
+        v = v.replaceAll(r"\'", "'").replaceAll(r'\"', '"').replaceAll(r'\\', r'\');
+        switch (m.group(1)!.toLowerCase()) {
+          case 'body':
+            body = v;
+          case 'method':
+            method = v;
+          case 'charset':
+            charset = v.toLowerCase();
+          case 'contenttype':
+            contentType = v;
+        }
+      }
+    }
+    return (body: body, method: method, charset: charset, contentType: contentType, headers: headers);
+  }
+
+  /// 按构建结果发起请求（POST/GET、charset、自定义 headers）
+  Future<PageResponse> _fetch(({
+    String url,
+    String? body,
+    String? method,
+    String? contentType,
+    String? charset,
+    Map<String, String> headers,
+  }) built) {
+    final hdrs = {..._headers, ...built.headers};
+    final method = built.method?.toUpperCase() ?? (built.body != null ? 'POST' : 'GET');
+    if (method == 'POST') {
+      Object bodyData = built.body ?? '';
+      final charset = built.charset ?? '';
+      if (charset.startsWith('gb')) {
+        bodyData = HttpClient.gbkEncode(bodyData as String);
+      }
+      return _check(HttpClient.instance.post(built.url,
+          body: bodyData,
+          headers: hdrs,
+          contentType: built.contentType ?? 'application/x-www-form-urlencoded',
+          charsetHint: built.charset));
+    }
+    return _check(HttpClient.instance.get(built.url, headers: hdrs, charsetHint: built.charset));
+  }
+
+  Future<List<SearchBook>> search(String key, {int page = 1}) async {
+    final built = _buildRequest(source.searchUrl ?? '', key: key, page: page);
+    if (built.url.isEmpty) return [];
+    final resp = await _fetch(built);
     return _parseBookList(resp.body, resp.url,
         listRule: source.ruleSearch.bookList.isEmpty
             ? 'class.searchbook'
@@ -186,24 +278,9 @@ class BookSourceEngine {
   }
 
   Future<List<SearchBook>> explore(String urlTemplate, {int page = 1}) async {
-    var tpl = urlTemplate;
-    String? bodyTemplate;
-    final amp = _findOptionsSplit(tpl);
-    if (amp != null) {
-      bodyTemplate = tpl.substring(amp + 2).trim();
-      tpl = tpl.substring(0, amp).trim();
-    }
-    tpl = tpl.replaceAllMapped(RegExp(r'\{\{?page\}?\}(?:<(\d+)>)?'), (m) {
-      final step = int.tryParse(m.group(1) ?? '') ?? 1;
-      return (1 + (page - 1) * step).toString();
-    });
-    final url = _abs(source.bookSourceUrl, tpl);
-    PageResponse resp;
-    if (bodyTemplate != null && bodyTemplate.trim().startsWith('{')) {
-      resp = await HttpClient.instance.post(url, body: bodyTemplate, headers: _headers);
-    } else {
-      resp = await HttpClient.instance.get(url, headers: _headers);
-    }
+    final built = _buildRequest(urlTemplate, page: page);
+    if (built.url.isEmpty) return [];
+    final resp = await _fetch(built);
     final er = source.ruleExplore;
     return _parseBookList(
       resp.body,
@@ -224,10 +301,16 @@ class BookSourceEngine {
     final out = <SearchBook>[];
     for (final item in items) {
       final itemText = _itemToText(item);
+      final itemIsMap = item is Map || item is List;
       String pick(String rule) {
         if (rule.trim().isEmpty) return '';
-        final list = RuleEngine.getStringList(itemText, rule, isJson: item is Map || item is List);
-        return list.isEmpty ? '' : list.first.trim();
+        final list = RuleEngine.getStringList(itemText, rule, isJson: itemIsMap);
+        if (list.isEmpty) {
+          // JSON 源的 URL 字面模板（如 `/book/{{$.id}}`）：规则本身即结果
+          final t = _renderTemplates(rule.trim(), item);
+          return t.trim() == rule.trim() ? '' : t.trim();
+        }
+        return _renderTemplates(list.first.trim(), item);
       }
 
       String name, bookUrl;
@@ -273,16 +356,46 @@ class BookSourceEngine {
     return item.outerHtml.toString();
   }
 
+  /// JSON 源的 URL/文本模板：`/book/{{$.book_id}}/chapters` 用当前对象字段填充
+  static String _renderTemplates(String s, dynamic ctx) {
+    if (!s.contains('{{') || ctx is! Map) return s;
+    return s.replaceAllMapped(RegExp(r'\{\{\$?\.?(\w+)\}\}'), (m) {
+      final v = ctx[m.group(1)];
+      return v == null ? '' : '$v';
+    });
+  }
+
   Future<BookDetail> bookInfo(String bookUrl, {String? name, String? author}) async {
-    final resp = await HttpClient.instance.get(bookUrl, headers: _headers);
-    final body = resp.body;
+    if (bookUrl.trim().isEmpty) {
+      throw Exception('该书源未能解析出详情页链接（规则可能依赖 JS 或站方改版）');
+    }
+    final resp = await _check(HttpClient.instance.get(bookUrl, headers: _headers));
+    var body = resp.body;
     final url = resp.url;
-    final isJson = ContentAnalyzer.isJsonContent(body);
+    var isJson = ContentAnalyzer.isJsonContent(body);
     final rb = source.ruleBookInfo;
+    // ruleBookInfo.init（模型字段 bookInfoUrl）：把子对象（如 $.data）设为后续规则的求值范围
+    Map<String, dynamic>? scope;
+    if (isJson && rb.bookInfoUrl.trim().isNotEmpty) {
+      final vals = RuleEngine.getElements(body, rb.bookInfoUrl, isJson: true);
+      if (vals.length == 1 && vals.first is Map) {
+        scope = (vals.first as Map).cast<String, dynamic>();
+        body = jsonEncode(scope);
+      }
+    } else if (isJson) {
+      try {
+        final j = jsonDecode(body);
+        if (j is Map) scope = j.cast<String, dynamic>();
+      } catch (_) {}
+    }
     String pick(String rule) {
       if (rule.trim().isEmpty) return '';
       final l = RuleEngine.getStringList(body, rule, isJson: isJson);
-      return l.isEmpty ? '' : l.first.trim();
+      if (l.isEmpty) {
+        final t = _renderTemplates(rule.trim(), scope);
+        return t.trim() == rule.trim() ? '' : t.trim();
+      }
+      return _renderTemplates(l.first.trim(), scope);
     }
 
     final detail = BookDetail()
@@ -301,57 +414,112 @@ class BookSourceEngine {
   }
 
   Future<List<Chapter>> toc(String tocUrl) async {
-    final resp = await HttpClient.instance.get(tocUrl, headers: _headers);
+    final resp = await _check(HttpClient.instance.get(tocUrl, headers: _headers));
     var body = resp.body;
     var pageUrl = resp.url;
-    final isJson = ContentAnalyzer.isJsonContent(body);
     final rt = source.ruleToc;
-
-    // 章节列表规则：chapterList 选出节点，再逐个取 name/url
-    // Legado 中 ruleToc 无 chapterList 字段，通常用选择前缀；约定：
-    // 若规则含 `@`，前半为列表选择，但简化处理：chapterName 直接在全文找。
-    List<String> names;
-    List<String> urls;
-    if (rt.chapterName.trim().isEmpty) {
-      return [];
-    }
-    names = RuleEngine.getStringList(body, rt.chapterName, isJson: isJson);
-    urls = rt.chapterUrl.trim().isEmpty ? List.generate(names.length, (_) => '') : RuleEngine.getStringList(body, rt.chapterUrl, isJson: isJson);
-    if (urls.length == 1 && names.length > 1) urls = List.generate(names.length, (_) => urls.first);
-    if (names.length == 1 && urls.length > 1) names = List.generate(urls.length, (_) => names.first);
-    final len = names.length < urls.length ? names.length : urls.length;
-    final chapters = <Chapter>[];
-    for (var i = 0; i < len; i++) {
-      final title = _cleanText(names[i]);
-      if (title.isEmpty) continue;
-      chapters.add(Chapter(title, _abs(pageUrl, urls[i]), i));
-    }
+    var chapters = _parseTocPage(body, pageUrl, ContentAnalyzer.isJsonContent(body), 0);
 
     // nextTocUrl 追加后续页
     if (rt.nextTocUrl.trim().isNotEmpty) {
+      var isJson = ContentAnalyzer.isJsonContent(body);
       var nextUrl = RuleEngine.getString(body, rt.nextTocUrl, isJson: isJson);
       var guard = 0;
       while (nextUrl.trim().isNotEmpty && guard++ < 20) {
         final abs = _abs(pageUrl, nextUrl);
         if (abs == pageUrl) break;
-        final resp2 = await HttpClient.instance.get(abs, headers: _headers);
+        final resp2 = await _check(HttpClient.instance.get(abs, headers: _headers));
         body = resp2.body;
         pageUrl = resp2.url;
-        final isJson2 = ContentAnalyzer.isJsonContent(body);
-        final n2 = RuleEngine.getStringList(body, rt.chapterName, isJson: isJson2);
-        final u2 = rt.chapterUrl.trim().isEmpty
-            ? List.generate(n2.length, (_) => '')
-            : RuleEngine.getStringList(body, rt.chapterUrl, isJson: isJson2);
-        final l2 = n2.length < u2.length ? n2.length : u2.length;
-        for (var i = 0; i < l2; i++) {
-          final title = _cleanText(n2[i]);
-          if (title.isEmpty) continue;
-          chapters.add(Chapter(title, _abs(pageUrl, u2[i]), chapters.length));
-        }
-        nextUrl = RuleEngine.getString(body, rt.nextTocUrl, isJson: isJson2);
+        isJson = ContentAnalyzer.isJsonContent(body);
+        chapters = [...chapters, ..._parseTocPage(body, pageUrl, isJson, chapters.length)];
+        nextUrl = RuleEngine.getString(body, rt.nextTocUrl, isJson: isJson);
       }
     }
     return chapters;
+  }
+
+  /// 解析一页目录：优先 chapterList 选节点后逐节点取字段（避免 name/url 平行列表错位），
+  /// 无 chapterList 时回退为全文平行列表对齐。按 url 去重（chapterList 的 && 组合常出现父子节点重复命中）。
+  List<Chapter> _parseTocPage(String body, String pageUrl, bool isJson, int startIndex) {
+    final rt = source.ruleToc;
+    final out = <Chapter>[];
+    final seenUrls = <String>{};
+    Map<String, dynamic>? rootCtx;
+    if (isJson) {
+      try {
+        final j = jsonDecode(body);
+        if (j is Map) rootCtx = j.cast<String, dynamic>();
+      } catch (_) {}
+    }
+    if (rt.chapterList.trim().isNotEmpty) {
+      final items = RuleEngine.getElements(body, rt.chapterList, isJson: isJson);
+      var idx = startIndex;
+      for (final item in items) {
+        final itemJson = item is Map || item is List;
+        final text = _itemToText(item);
+        String pick(String rule) {
+          if (rule.trim().isEmpty) return '';
+          final l = RuleEngine.getStringList(text, rule, isJson: itemJson);
+          String finish(String raw) {
+            var v = _renderTemplates(raw, item);
+            // 章节对象缺字段时（如 book_id 只在响应根上），用根对象再渲染一次
+            if (v.contains('{{') && rootCtx != null) v = _renderTemplates(v, rootCtx);
+            return v;
+          }
+          if (l.isEmpty) {
+            final t = finish(rule.trim());
+            return t.trim() == rule.trim() ? '' : t.trim();
+          }
+          return finish(l.first.trim());
+        }
+
+        var title = rt.chapterName.trim().isEmpty
+            ? _nodeToTextSafe(item)
+            : _cleanText(pick(rt.chapterName));
+        title = _cleanText(title);
+        final url = pick(rt.chapterUrl);
+        if (title.isEmpty || url.isEmpty) continue;
+        if (!seenUrls.add(url)) continue;
+        final vipRaw = rt.isVip.trim().isEmpty ? '' : pick(rt.isVip);
+        final isVip = vipRaw.isNotEmpty && vipRaw != '0' && vipRaw.toLowerCase() != 'false';
+        out.add(Chapter(title, _abs(pageUrl, url), idx++, isVip: isVip));
+      }
+      if (out.isNotEmpty) return out;
+    }
+    // 回退：全文平行列表
+    if (rt.chapterName.trim().isEmpty) return [];
+    final names = RuleEngine.getStringList(body, rt.chapterName, isJson: isJson);
+    final urls = rt.chapterUrl.trim().isEmpty
+        ? List.generate(names.length, (_) => '')
+        : RuleEngine.getStringList(body, rt.chapterUrl, isJson: isJson);
+    final len = names.length < urls.length ? names.length : urls.length;
+    for (var i = 0; i < len; i++) {
+      final title = _cleanText(names[i]);
+      if (title.isEmpty) continue;
+      final absUrl = _abs(pageUrl, urls[i]);
+      if (absUrl.isNotEmpty && !seenUrls.add(absUrl)) continue;
+      out.add(Chapter(title, absUrl, startIndex + out.length));
+    }
+    return out;
+  }
+
+  static String _nodeToTextSafe(dynamic node) {
+    if (node == null) return '';
+    if (node is String) return node;
+    try {
+      return node.text.toString();
+    } catch (_) {
+      return node.toString();
+    }
+  }
+
+  Future<PageResponse> _check(Future<PageResponse> f) async {
+    final resp = await f;
+    if (resp.statusCode >= 400) {
+      throw Exception('HTTP ${resp.statusCode}：站点拒绝或页面不存在（${resp.url}）');
+    }
+    return resp;
   }
 
   static String _cleanText(String s) =>
@@ -363,7 +531,14 @@ class BookSourceEngine {
     final buffers = <String>[];
     var guard = 0;
     while (url.isNotEmpty && guard++ < 20) {
-      final resp = await HttpClient.instance.get(url, headers: _headers);
+      PageResponse resp;
+      try {
+        resp = await _check(HttpClient.instance.get(url, headers: _headers));
+      } catch (_) {
+        // 已取到部分内容时后续分页失败：保留已抓取文本
+        if (buffers.isNotEmpty) break;
+        rethrow;
+      }
       final body = resp.body;
       final pageUrl = resp.url;
       final isJson = ContentAnalyzer.isJsonContent(body);

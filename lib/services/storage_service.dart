@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:hive_ce_flutter/hive_flutter.dart';
 
+import '../core/book_source_engine.dart';
 import '../models/book_source.dart';
 
 /// 本地存储：书源、书架、阅读进度、章节缓存、设置。
@@ -111,6 +112,24 @@ class StorageService {
   }
 
   Future<void> clearChapterCache() => _cache.clear();
+
+  // ---------- 目录缓存 ----------
+  static String _tocKey(String tocUrl) => 'toc::$tocUrl';
+
+  List<Chapter>? getCachedToc(String tocUrl) {
+    final raw = _cache.get(_tocKey(tocUrl));
+    if (raw == null) return null;
+    try {
+      final j = jsonDecode(raw);
+      if (j is List) return j.whereType<Map>().map(Chapter.fromJson).toList();
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> putCachedToc(String tocUrl, List<Chapter> chapters) =>
+      _cache.put(_tocKey(tocUrl), jsonEncode(chapters.map((c) => c.toJson()).toList()));
+
+  Future<void> removeCachedToc(String tocUrl) => _cache.delete(_tocKey(tocUrl));
 
   // ---------- 设置 ----------
   dynamic setting(String key, {dynamic def}) => _settings.get(key) ?? def;
