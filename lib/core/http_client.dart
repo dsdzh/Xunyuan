@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io' as io;
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:fast_gbk/fast_gbk.dart';
 
 /// 响应：已按正确字符集解码
@@ -40,20 +42,49 @@ class CookieJar {
 class HttpClient {
   static final HttpClient instance = HttpClient._();
   late final Dio _dio;
+  late final Dio _lenientDio;
   final CookieJar cookies = CookieJar();
 
   static const defaultUA =
       'Mozilla/5.0 (Linux; Android 14; SM-S9210) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
   HttpClient._() {
-    _dio = Dio(BaseOptions(
+    final base = BaseOptions(
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 20),
       responseType: ResponseType.bytes,
       followRedirects: true,
       maxRedirects: 10,
       validateStatus: (s) => s != null && s < 500,
-    ));
+    );
+    _dio = Dio(base);
+    // 不少小说站只下发叶子证书，浏览器靠 AIA 补链而 BoringSSL 直接报
+    // CERTIFICATE_VERIFY_FAILED，握手失败时走这条放宽校验的重试通道。
+    _lenientDio = Dio(base)
+      ..httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () {
+          final client = io.HttpClient(context: io.SecurityContext(withTrustedRoots: true));
+          client.badCertificateCallback = (_, _, _) => true;
+          return client;
+        },
+      );
+  }
+
+  static bool _isCertFailure(DioException e) {
+    if (e.error is io.HandshakeException) return true;
+    final err = e.error?.toString() ?? '';
+    return e.type == DioExceptionType.connectionError &&
+        err.contains('CERTIFICATE_VERIFY_FAILED');
+  }
+
+  Future<Response<List<int>>> _execute(
+      Future<Response<List<int>>> Function(Dio dio) send) async {
+    try {
+      return await send(_dio);
+    } on DioException catch (e) {
+      if (_isCertFailure(e)) return await send(_lenientDio);
+      rethrow;
+    }
   }
 
   Future<PageResponse> get(String url, {Map<String, String>? headers, String? charsetHint}) async {
@@ -65,7 +96,7 @@ class HttpClient {
       ...?headers,
     }..removeWhere((k, v) => v.isEmpty));
     try {
-      final resp = await _dio.get(url, options: options);
+      final resp = await _execute((d) => d.get(url, options: options));
       cookies.storeFrom(url, resp.headers['set-cookie']);
       return PageResponse(
         decode(resp.data as List<int>, contentType: resp.headers.value(Headers.contentTypeHeader), hint: charsetHint),
@@ -86,14 +117,14 @@ class HttpClient {
     final options = Options(headers: {
       'User-Agent': defaultUA,
       'Cookie': cookies.headerFor(url),
-      if (contentType != null) 'Content-Type': contentType,
+      'Content-Type': contentType,
       ...?headers,
     }..removeWhere((k, v) => v.isEmpty));
-    final resp = await _dio.post(url, data: body, options: options);
+    final resp = await _execute((d) => d.post(url, data: body, options: options));
     cookies.storeFrom(resp.realUri.toString(), resp.headers['set-cookie']);
     final data = resp.data;
     return PageResponse(
-      decode(data is List<int> ? data : utf8.encode(data?.toString() ?? ''),
+      decode(data ?? const <int>[],
           contentType: resp.headers.value(Headers.contentTypeHeader), hint: charsetHint),
       resp.statusCode ?? 0,
       resp.realUri.toString(),
