@@ -144,12 +144,13 @@ class ShelfState extends ChangeNotifier {
     await load();
   }
 
-  Future<void> updateProgress(String key, int chapterIndex, String chapterTitle, double progress) async {
+  Future<void> updateProgress(String key, int chapterIndex, String chapterTitle, double progress, double chapterProgress) async {
     final book = StorageService.instance.getBook(key);
     if (book == null) return;
     book['durChapterIndex'] = chapterIndex;
     book['durChapterTitle'] = chapterTitle;
     book['readProgress'] = progress;
+    book['durChapterProgress'] = chapterProgress;
     book['durChapterTime'] = DateTime.now().millisecondsSinceEpoch;
     await StorageService.instance.putBook(book);
     await load();
@@ -164,16 +165,18 @@ class ShelfState extends ChangeNotifier {
       StorageService.instance.getBook(StorageService.bookKey(name, author, sourceUrl)) != null;
 
   /// 退出阅读时记录浏览历史；书在书架则同步书架进度。
-  Future<void> recordRead(Map<String, dynamic> book, int chapterIndex, String chapterTitle, double progress) async {
+  /// [chapterProgress] 为章内进度比例（0~1），用于下次直接回到上次阅读位置。
+  Future<void> recordRead(Map<String, dynamic> book, int chapterIndex, String chapterTitle, double chapterProgress) async {
     var entry = Map<String, dynamic>.of(book);
     final key = entry['key']?.toString() ??
         StorageService.bookKey('${entry['name'] ?? ''}', '${entry['author'] ?? ''}', '${entry['sourceUrl'] ?? ''}');
     entry['key'] = key;
     if (StorageService.instance.getBook(key) != null) {
-      await updateProgress(key, chapterIndex, chapterTitle, progress);
+      await updateProgress(key, chapterIndex, chapterTitle, chapterProgress, chapterProgress);
       entry = StorageService.instance.getBook(key)!;
     }
     entry['durChapterIndex'] = chapterIndex;
+    entry['durChapterProgress'] = chapterProgress;
     entry['lastReadTime'] = DateTime.now().millisecondsSinceEpoch;
     await StorageService.instance.putReadHistory(entry);
     history = StorageService.instance.readHistory;

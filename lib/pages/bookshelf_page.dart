@@ -140,9 +140,8 @@ class BookshelfPage extends StatelessWidget {
 
   String _progressText(Map<String, dynamic> book) {
     final dur = (book['durChapterTitle'] ?? '').toString();
+    if (dur.isEmpty) return '尚未开始阅读';
     final idx = book['durChapterIndex'];
-    if (dur.isEmpty) return '';
-    if (idx == 0) return '尚未开始阅读';
     final total = book['tocCount'];
     final pos = (idx is int && total is int && total > 0) ? '第 ${idx + 1}/$total 章 · ' : '';
     return '$pos$dur';

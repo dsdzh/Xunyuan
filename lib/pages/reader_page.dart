@@ -54,7 +54,12 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   double _progress = 0;
   int _progressChapter = 0;
-  String _progressTitle = '';
+
+  // 断点恢复：章内进度比例（仅对打开时的起始章节生效一次）
+  double? _restoreRatio;
+  int _restoreChapter = 0;
+  double _lastChapterRatio = 0;
+  ReaderSettings? _lastSettings;
 
   @override
   void initState() {
@@ -67,6 +72,12 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     });
     _progressChapter = (widget.startIndex ?? _intOf(widget.book['durChapterIndex'])).clamp(0, 1 << 30);
     _currentChapter = _progressChapter;
+    _restoreChapter = _progressChapter;
+    final rp = widget.book['durChapterProgress'];
+    if (rp is num && rp > 0) {
+      _restoreRatio = rp.toDouble().clamp(0.0, 1.0);
+      _lastChapterRatio = _restoreRatio!;
+    }
     if (widget.chapters != null && widget.chapters!.isNotEmpty) {
       _chapters = widget.chapters!;
       _loadingToc = false;
@@ -80,12 +91,31 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   @override
   void dispose() {
-    if (_progressTitle.isNotEmpty) {
-      unawaited(_shelf.recordRead(widget.book, _progressChapter, _progressTitle, _progress));
+    if (_chapters.isNotEmpty) {
+      final ch = _progressChapter.clamp(0, _chapters.length - 1);
+      final title = _chapters[ch].title;
+      if (title.isNotEmpty) {
+        unawaited(_shelf.recordRead(widget.book, ch, title, _scrollMode ? _lastChapterRatio : _progress));
+      }
     }
     _turnCtrl.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  /// 章内进度比例（0~1）
+  double _chapterProgressRatio(int chapter) {
+    if (!_scrollMode) return _progress;
+    if (!_scrollController.hasClients || _paragraphs.isEmpty) return 0;
+    final start = _chapterStart[chapter] ?? 0;
+    var end = start;
+    while (end < _paragraphChapter.length && _paragraphChapter[end] == chapter) {
+      end++;
+    }
+    final count = end - start;
+    if (count <= 1) return 0;
+    final paraIdx = (_scrollController.position.pixels / _avgParagraphHeight()).floor().clamp(start, end - 1);
+    return ((paraIdx - start) / (count - 1)).clamp(0.0, 1.0);
   }
 
   Future<void> _loadToc({bool force = false}) async {
@@ -170,6 +200,21 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     }
     if (!mounted) return;
     setState(() {});
+    if (_restoreRatio != null && chapterIdx == _restoreChapter) {
+      final ratio = _restoreRatio!;
+      _restoreRatio = null;
+      final start = _chapterStart[chapterIdx] ?? 0;
+      var end = start;
+      while (end < _paragraphChapter.length && _paragraphChapter[end] == chapterIdx) {
+        end++;
+      }
+      final paraIdx = start + ratio * math.max(end - start - 1, 0);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _scrollController.hasClients) {
+          _scrollController.jumpTo((paraIdx * _avgParagraphHeight()).clamp(0.0, _scrollController.position.maxScrollExtent));
+        }
+      });
+    }
   }
 
   Future<void> _appendChapter(int idx) async {
@@ -220,7 +265,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   }
 
   double _avgParagraphHeight() {
-    final settings = context.read<ReaderSettings>();
+    final settings = _lastSettings ?? context.read<ReaderSettings>();
     return settings.fontSize * settings.lineHeight * 3;
   }
 
@@ -229,6 +274,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final pos = _scrollController.position;
     _progress = pos.maxScrollExtent <= 0 ? 0 : (pos.pixels / pos.maxScrollExtent).clamp(0.0, 1.0);
     if (n is ScrollUpdateNotification) {
+      final ch = _visibleChapter();
+      _progressChapter = ch;
+      _lastChapterRatio = _chapterProgressRatio(ch);
       if (n.metrics.extentAfter < 1500) {
         _appendNextIfNeed();
       }
@@ -295,6 +343,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<ReaderSettings>();
+    _lastSettings = settings;
     if (settings.scrollMode != _scrollMode) {
       _scrollMode = settings.scrollMode;
       WidgetsBinding.instance.addPostFrameCallback((_) => _prepare());
@@ -395,12 +444,19 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               key: ValueKey('${settings.fontSize}|${settings.lineHeight}'),
               builder: (context, constraints) {
                 final pages = _paginate(chapterParagraphs: _chapterParagraphs, constraints: constraints, settings: settings);
+                if (_restoreRatio != null && _currentChapter == _restoreChapter) {
+                  _readPage = (_restoreRatio! * (pages.length - 1)).round().clamp(0, pages.length - 1);
+                  _restoreRatio = null;
+                  // LayoutBuilder 在 layout 阶段执行，底部进度条 build 时读到的是旧 _progress，补一次重建
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) setState(() {});
+                  });
+                }
                 if (_readPage >= pages.length) _readPage = pages.length - 1;
                 _progress = pages.length <= 1
                     ? 0.0
                     : (_readPage / (pages.length - 1)).clamp(0.0, 1.0);
                 _progressChapter = _currentChapter;
-                _progressTitle = _chapters[_currentChapter].title;
                 return GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onHorizontalDragEnd: (d) {
