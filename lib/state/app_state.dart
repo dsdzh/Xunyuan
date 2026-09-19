@@ -4,11 +4,15 @@ import 'package:flutter/foundation.dart';
 
 import '../core/book_source_engine.dart';
 import '../core/http_client.dart';
+import '../core/source_health.dart';
 import '../models/book_source.dart';
 import '../services/storage_service.dart';
 
 class SourceState extends ChangeNotifier {
   final List<BookSource> sources = [];
+  final Map<String, SourceHealth> health = {};
+  int _healthJobs = 0;
+  bool get healthChecking => _healthJobs > 0;
 
   List<BookSource> get enabledNovelSources =>
       sources.where((s) => s.enabled && s.isNovel).toList();
@@ -17,6 +21,11 @@ class SourceState extends ChangeNotifier {
     sources
       ..clear()
       ..addAll(StorageService.instance.sources);
+    health.clear();
+    for (final s in sources) {
+      final h = SourceHealth.fromJson(StorageService.instance.getSourceHealth(s.bookSourceUrl));
+      if (h != null) health[s.bookSourceUrl] = h;
+    }
     notifyListeners();
   }
 
@@ -41,10 +50,37 @@ class SourceState extends ChangeNotifier {
 
   Future<void> remove(String url) async {
     await StorageService.instance.removeSource(url);
+    await StorageService.instance.removeSourceHealth(url);
     await load();
   }
 
   String exportAll() => StorageService.instance.exportAllSources();
+
+  /// 健康度检测：并发 3 路逐个探测，结果实时刷新并持久化。
+  Future<void> checkHealth(List<BookSource> targets) async {
+    // 检测中仅允许单源重测（如详情弹窗里点"重新检测此书源"）
+    if (_healthJobs > 0 && targets.length != 1) return;
+    _healthJobs++;
+    notifyListeners();
+    try {
+      final checker = SourceHealthChecker();
+      final queue = List<BookSource>.from(targets);
+      Future<void> worker() async {
+        while (queue.isNotEmpty) {
+          final s = queue.removeAt(0);
+          final h = await checker.check(s);
+          health[s.bookSourceUrl] = h;
+          await StorageService.instance.putSourceHealth(s.bookSourceUrl, h.toJson());
+          notifyListeners();
+        }
+      }
+
+      await Future.wait([worker(), worker(), worker()]);
+    } finally {
+      _healthJobs--;
+      notifyListeners();
+    }
+  }
 }
 
 class ShelfState extends ChangeNotifier {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 
+import '../core/source_health.dart';
 import '../models/book_source.dart';
 import '../state/app_state.dart';
 import 'search_page.dart';
@@ -91,6 +93,74 @@ class SourcePage extends StatelessWidget {
     }
   }
 
+  Future<void> _checkHealthAll(BuildContext context) async {
+    final state = context.read<SourceState>();
+    final targets = state.sources.where((s) => s.enabled).toList();
+    if (targets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('没有已启用的书源')));
+      return;
+    }
+    unawaited(state.checkHealth(targets));
+  }
+
+  Widget _healthBadge(BuildContext context, SourceState state, BookSource s) {
+    final h = state.health[s.bookSourceUrl];
+    if (h == null) {
+      return state.healthChecking
+          ? const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: SizedBox(
+                width: 16, height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          : const SizedBox.shrink();
+    }
+    final (color, label) = switch (h.level) {
+      HealthLevel.ok => (Colors.green, '可用'),
+      HealthLevel.searchOnly => (Colors.orange, '仅搜索'),
+      HealthLevel.tocNoContent => (Colors.deepOrange, '缺正文'),
+      _ => (Colors.red, '不可用'),
+    };
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: InkWell(
+        onTap: () => _showHealthDetail(context, s, h),
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: .15),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showHealthDetail(BuildContext context, BookSource s, SourceHealth h) async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${s.bookSourceName} · ${HealthLevel.label(h.level)}'),
+        content: Text('耗时：${h.latencyMs}ms\n'
+            '结果：${h.message.isEmpty ? '无附加信息' : h.message}\n'
+            '时间：${DateTime.fromMillisecondsSinceEpoch(h.checkedAt).toString().substring(0, 19)}'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
+          FilledButton.tonal(
+            onPressed: () {
+              Navigator.pop(ctx);
+              unawaited(context.read<SourceState>().checkHealth([s]));
+            },
+            child: const Text('重新检测此书源'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<SourceState>();
@@ -110,13 +180,20 @@ class SourcePage extends StatelessWidget {
                   _importFromUrl(context);
                 case 'export':
                   _exportAll(context);
+                case 'health':
+                  _checkHealthAll(context);
               }
             },
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'clipboard', child: Text('从剪贴板导入')),
-              PopupMenuItem(value: 'file', child: Text('从文件导入')),
-              PopupMenuItem(value: 'url', child: Text('从 URL 导入')),
-              PopupMenuItem(value: 'export', child: Text('导出全部到剪贴板')),
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'clipboard', child: Text('从剪贴板导入')),
+              const PopupMenuItem(value: 'file', child: Text('从文件导入')),
+              const PopupMenuItem(value: 'url', child: Text('从 URL 导入')),
+              const PopupMenuItem(value: 'export', child: Text('导出全部到剪贴板')),
+              PopupMenuItem(
+                value: 'health',
+                enabled: !state.healthChecking,
+                child: Text(state.healthChecking ? '健康度检测中…' : '检测书源健康度'),
+              ),
             ],
           ),
         ],
@@ -142,7 +219,7 @@ class SourcePage extends StatelessWidget {
             )
           : ListView.separated(
               itemCount: state.sources.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
+              separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, i) {
                 final s = state.sources[i];
                 final hasRule = (s.searchUrl?.isNotEmpty ?? false) || (s.exploreUrl?.isNotEmpty ?? false);
@@ -171,9 +248,15 @@ class SourcePage extends StatelessWidget {
                     ],
                   ),
                   isThreeLine: !hasRule,
-                  trailing: Switch(
-                    value: s.enabled,
-                    onChanged: (v) => state.toggle(s.bookSourceUrl, v),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _healthBadge(context, state, s),
+                      Switch(
+                        value: s.enabled,
+                        onChanged: (v) => state.toggle(s.bookSourceUrl, v),
+                      ),
+                    ],
                   ),
                   onTap: (s.searchUrl?.isNotEmpty ?? false)
                       ? () => Navigator.of(context).push(MaterialPageRoute(

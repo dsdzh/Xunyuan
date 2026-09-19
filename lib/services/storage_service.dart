@@ -71,6 +71,24 @@ class StorageService {
     return const JsonEncoder.withIndent('  ').convert(list);
   }
 
+  // ---------- 书源健康度 ----------
+  static String _healthKey(String sourceUrl) => 'health::${Uri.parse(sourceUrl).host}';
+
+  Map<String, dynamic>? getSourceHealth(String sourceUrl) {
+    final v = _settings.get(_healthKey(sourceUrl));
+    if (v is! String) return null;
+    try {
+      return (jsonDecode(v) as Map).cast<String, dynamic>();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> putSourceHealth(String sourceUrl, Map<String, dynamic> data) =>
+      _settings.put(_healthKey(sourceUrl), jsonEncode(data));
+
+  Future<void> removeSourceHealth(String sourceUrl) => _settings.delete(_healthKey(sourceUrl));
+
   // ---------- 书籍 / 书架 ----------
   static String bookKey(String name, String author, String sourceUrl) => '$name|$author|$sourceUrl';
 
