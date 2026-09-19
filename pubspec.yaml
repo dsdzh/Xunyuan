@@ -1,0 +1,30 @@
+name: xunyuan
+description: "寻源 — 支持导入书源的 Flutter 阅读应用（兼容 Legado 书源规则子集）"
+publish_to: 'none'
+
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  dio: ^5.11.1
+  html: ^0.15.7
+  provider: ^6.1.5
+  hive_ce: ^2.20.0
+  hive_ce_flutter: ^2.3.4
+  file_picker: ^13.1.0
+  path_provider: ^2.1.6
+  fast_gbk: ^1.0.0
+  crypto: ^3.0.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
