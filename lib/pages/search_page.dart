@@ -30,14 +30,26 @@ class _SearchPageState extends State<SearchPage> {
   late final TextEditingController _controller = TextEditingController(text: widget.initialKeyword);
   final List<SourceGroupResult> _results = [];
   Set<String> _selectedUrls = {};
+  final Set<String> _seenUrls = {};
 
   @override
   void initState() {
     super.initState();
-    final sources = context.read<SourceState>().enabledNovelSources;
-    _selectedUrls = sources.map((s) => s.bookSourceUrl).toSet();
+    _syncSelected();
     if (widget.initialKeyword.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _doSearch(widget.initialKeyword));
+    }
+  }
+
+  void _syncSelected() {
+    // 新导入的书源默认勾选（initState 时书源列表可能还是空的），
+    // 仅对首次出现的书源生效，不覆盖用户手动取消的勾选
+    final sources = context.read<SourceState>().enabledNovelSources;
+    for (final s in sources) {
+      if (!_seenUrls.contains(s.bookSourceUrl)) {
+        _seenUrls.add(s.bookSourceUrl);
+        _selectedUrls.add(s.bookSourceUrl);
+      }
     }
   }
 
@@ -48,6 +60,7 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   Future<void> _pickSources() async {
+    _syncSelected();
     final all = context.read<SourceState>().enabledNovelSources;
     final selected = {..._selectedUrls};
     await showModalBottomSheet(
@@ -103,6 +116,7 @@ class _SearchPageState extends State<SearchPage> {
 
   Future<void> _doSearch(String key) async {
     if (key.trim().isEmpty) return;
+    _syncSelected();
     final sources = context
         .read<SourceState>()
         .enabledNovelSources

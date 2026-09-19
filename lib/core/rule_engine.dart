@@ -95,7 +95,7 @@ class RuleEngine {
     bool regexFilter = false;
     final idx = rule.indexOf('##');
     if (idx >= 0) {
-      core = rule.substring(0, idx);
+      core = rule.substring(0, idx).trim();
       var rest = rule.substring(idx + 2);
       if (rest.startsWith('#')) {
         // ###pattern —— 仅保留匹配的内容
@@ -230,9 +230,9 @@ class RuleEngine {
     String? attr;
     final atIdx = _lastUnbracketed(work, '@');
     if (atIdx > 0) {
-      final maybeAttr = work.substring(atIdx + 1);
+      final maybeAttr = work.substring(atIdx + 1).trim();
       if (!maybeAttr.contains('@')) {
-        work = work.substring(0, atIdx);
+        work = work.substring(0, atIdx).trimRight();
         attr = maybeAttr;
       }
     }

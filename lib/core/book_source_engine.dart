@@ -226,7 +226,7 @@ class BookSourceEngine {
       final itemText = _itemToText(item);
       String pick(String rule) {
         if (rule.trim().isEmpty) return '';
-        final list = RuleEngine.getStringList(itemText, rule, isJson: item is! String);
+        final list = RuleEngine.getStringList(itemText, rule, isJson: item is Map || item is List);
         return list.isEmpty ? '' : list.first.trim();
       }
 
@@ -385,9 +385,11 @@ class BookSourceEngine {
     return _normalizeContent(text);
   }
 
-  /// replaceRegex: 形如 `正则##替换` 或 Legado 的 `##` 列表
+  /// replaceRegex: Legado 格式 `##正则##替换`，多条用 `&&` 分隔；也兼容 `正则##替换`
   String _applyReplace(String text, String rule) {
-    for (final seg in rule.split('&&')) {
+    for (final rawSeg in rule.split('&&')) {
+      var seg = rawSeg.trim();
+      if (seg.startsWith('##')) seg = seg.substring(2);
       final parts = seg.split('##');
       if (parts.length >= 2) {
         try {
