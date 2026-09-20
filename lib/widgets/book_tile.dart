@@ -33,7 +33,7 @@ class BookTile extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _Cover(coverUrl: coverUrl, name: name),
+            BookCover(coverUrl: coverUrl, name: name),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -65,26 +65,27 @@ class BookTile extends StatelessWidget {
   }
 }
 
-class _Cover extends StatelessWidget {
+class BookCover extends StatelessWidget {
   final String coverUrl;
   final String name;
-  const _Cover({required this.coverUrl, required this.name});
+  final double width;
+  final double height;
+  const BookCover({super.key, required this.coverUrl, required this.name, this.width = 48, this.height = 64});
 
   @override
   Widget build(BuildContext context) {
-    const w = 48.0, h = 64.0;
     if (coverUrl.isEmpty || (!coverUrl.startsWith('http'))) {
-      return _placeholder(w, h);
+      return _placeholder(width, height);
     }
     return ClipRRect(
       borderRadius: BorderRadius.circular(4),
       child: Image.network(
         coverUrl,
-        width: w,
-        height: h,
+        width: width,
+        height: height,
         fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _placeholder(w, h),
-        loadingBuilder: (_, child, prog) => prog == null ? child : _placeholder(w, h),
+        errorBuilder: (_, __, ___) => _placeholder(width, height),
+        loadingBuilder: (_, child, prog) => prog == null ? child : _placeholder(width, height),
       ),
     );
   }

@@ -42,6 +42,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   List<String> _chapterParagraphs = [];
   int _currentChapter = 0;
   int _readPage = 0;
+  int _pagesTotal = 1;
 
   bool _menuVisible = true;
   late bool _scrollMode = context.read<ReaderSettings>().scrollMode;
@@ -344,47 +345,65 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   Widget build(BuildContext context) {
     final settings = context.watch<ReaderSettings>();
     _lastSettings = settings;
-    if (settings.scrollMode != _scrollMode) {
-      _scrollMode = settings.scrollMode;
+    if ((settings.pageAnimIndex == 3) != _scrollMode) {
+      _scrollMode = settings.pageAnimIndex == 3;
       WidgetsBinding.instance.addPostFrameCallback((_) => _prepare());
     }
     final theme = settings.theme;
     final bg = Color(theme.bg);
     final fg = Color(theme.fg);
 
-    return Scaffold(
-      backgroundColor: bg,
-      body: _loadingToc
-          ? Center(child: CircularProgressIndicator(color: fg))
-          : _error != null
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: fg)),
-                        const SizedBox(height: 16),
-                        FilledButton(onPressed: () => _loadToc(force: true), child: const Text('重试')),
-                      ],
-                    ),
-                  ),
-                )
-              : GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _menuVisible = !_menuVisible),
-                  child: Stack(
+    final content = _loadingToc
+        ? Center(child: CircularProgressIndicator(color: fg))
+        : _error != null
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Positioned.fill(
-                        child: SafeArea(
-                          child: _scrollMode ? _buildScrollReader(fg, settings) : _buildPagedReader(fg, settings),
-                        ),
-                      ),
-                      if (_menuVisible) _buildTopBar(bg, fg),
-                      if (_menuVisible) _buildBottomBar(bg, fg, settings),
+                      Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: fg)),
+                      const SizedBox(height: 16),
+                      FilledButton(onPressed: () => _loadToc(force: true), child: const Text('重试')),
                     ],
                   ),
                 ),
+              )
+            : GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() => _menuVisible = !_menuVisible),
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: SafeArea(
+                        child: _scrollMode ? _buildScrollReader(fg, settings) : _buildPagedReader(fg, settings),
+                      ),
+                    ),
+                    if (_menuVisible) _buildTopBar(bg, fg),
+                    if (_menuVisible) _buildBottomBar(bg, fg, settings),
+                  ],
+                ),
+              );
+
+    return Scaffold(
+      backgroundColor: bg,
+      body: Stack(
+        children: [
+          Positioned.fill(child: content),
+          if (settings.brightness < 1.0)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(color: Colors.black.withValues(alpha: (1 - settings.brightness) * 0.85)),
+              ),
+            ),
+          if (settings.eyeProtect)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Container(color: const Color(0x14FF9A3C)),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -453,6 +472,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                   });
                 }
                 if (_readPage >= pages.length) _readPage = pages.length - 1;
+                _pagesTotal = pages.length;
                 _progress = pages.length <= 1
                     ? 0.0
                     : (_readPage / (pages.length - 1)).clamp(0.0, 1.0);
@@ -572,6 +592,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final target = _readPage + dir;
     if (target < 0) {
       if (_currentChapter > 0) {
+        _stopTurnAnim();
         unawaited(_loadChapterForPaged(_currentChapter - 1).then((_) {
           // 上一章：跳到最后一页近似处理
           if (mounted) setState(() {});
@@ -581,8 +602,19 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     }
     if (target >= pages.length) {
       if (_currentChapter + 1 < _chapters.length) {
+        _stopTurnAnim();
         unawaited(_loadChapterForPaged(_currentChapter + 1));
       }
+      return;
+    }
+    // 动画未播完又翻页：立即结束上一次动画，直接落到新页，避免两页文字叠影
+    final noAnim = (_lastSettings?.pageAnimIndex ?? 0) == 4 || _turnCtrl.isAnimating;
+    if (noAnim) {
+      _turnCtrl.stop();
+      setState(() {
+        _turnFrom = null;
+        _readPage = target;
+      });
       return;
     }
     setState(() {
@@ -591,6 +623,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       _readPage = target;
     });
     _turnCtrl.forward(from: 0);
+  }
+
+  void _stopTurnAnim() {
+    if (_turnCtrl.isAnimating) _turnCtrl.stop();
+    _turnFrom = null;
   }
 
   // _paginate 记忆化：段落列表 / 字号 / 行距 / 页面尺寸任一变化才重算
@@ -667,6 +704,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                 style: TextStyle(color: fg, fontSize: 15),
               ),
             ),
+            IconButton(
+              icon: Icon(_inShelf ? Icons.bookmark_added : Icons.bookmark_add_outlined, color: fg),
+              tooltip: _inShelf ? '已在书架' : '加入书架',
+              onPressed: _toggleShelf,
+            ),
             IconButton(icon: Icon(Icons.list, color: fg), tooltip: '目录', onPressed: _showTocSheet),
           ],
         ),
@@ -674,9 +716,29 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     );
   }
 
+  bool get _inShelf {
+    final key = widget.book['key']?.toString() ??
+        StorageService.bookKey('${widget.book['name'] ?? ''}', '${widget.book['author'] ?? ''}',
+            '${widget.book['sourceUrl'] ?? ''}');
+    return _shelf.byKey(key) != null;
+  }
+
+  Future<void> _toggleShelf() async {
+    if (_inShelf) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已在书架中')));
+      return;
+    }
+    final added = await _shelf.addFromReader(Map<String, dynamic>.of(widget.book));
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(added ? '已加入书架' : '加入书架失败：书信息不完整')));
+  }
+
   Widget _buildBottomBar(Color bg, Color fg, ReaderSettings settings) {
     final shownChapter = _scrollMode ? _visibleChapter() : _currentChapter;
     final chapterTitle = _chapters.isEmpty ? '' : _chapters[shownChapter.clamp(0, _chapters.length - 1)].title;
+    final isNight = settings.theme.name == '夜间';
     return Positioned(
       bottom: 0,
       left: 0,
@@ -688,22 +750,40 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
           mainAxisSize: MainAxisSize.min,
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
+              padding: const EdgeInsets.symmetric(horizontal: 12),
               child: Row(
                 children: [
-                  Text('${shownChapter + 1}/${_chapters.length}', style: TextStyle(color: fg, fontSize: 12)),
+                  TextButton(
+                    onPressed: shownChapter > 0 ? () => _jumpToChapter(shownChapter - 1) : null,
+                    child: Text('上一章', style: TextStyle(color: fg, fontSize: 13)),
+                  ),
                   Expanded(
                     child: Slider(
                       value: _progress,
                       onChanged: (v) {
-                        if (_scrollMode && _scrollController.hasClients) {
-                          _scrollController.jumpTo(v * _scrollController.position.maxScrollExtent);
+                        if (_scrollMode) {
+                          if (_scrollController.hasClients) {
+                            _scrollController.jumpTo(v * _scrollController.position.maxScrollExtent);
+                          }
+                          setState(() => _progress = v);
+                        } else {
+                          setState(() {
+                            _turnFrom = null;
+                            _readPage = (_pagesTotal <= 1)
+                                ? 0
+                                : (v * (_pagesTotal - 1)).round().clamp(0, _pagesTotal - 1);
+                            _progress = v;
+                          });
                         }
-                        setState(() => _progress = v);
                       },
                     ),
                   ),
-                  Text('${(_progress * 100).round()}%', style: TextStyle(color: fg, fontSize: 12)),
+                  TextButton(
+                    onPressed: shownChapter + 1 < _chapters.length
+                        ? () => _jumpToChapter(shownChapter + 1)
+                        : null,
+                    child: Text('下一章', style: TextStyle(color: fg, fontSize: 13)),
+                  ),
                 ],
               ),
             ),
@@ -711,22 +791,21 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 TextButton.icon(
-                  icon: Icon(Icons.text_decrease, color: fg, size: 18),
-                  label: Text('字号', style: TextStyle(color: fg, fontSize: 13)),
-                  onPressed: () => _showSettings(settings),
+                  icon: Icon(Icons.toc, color: fg, size: 18),
+                  label: Text('目录', style: TextStyle(color: fg, fontSize: 13)),
+                  onPressed: _showTocSheet,
                 ),
                 TextButton.icon(
-                  icon: Icon(_scrollMode ? Icons.menu_book : Icons.auto_stories, color: fg, size: 18),
-                  label: Text(_scrollMode ? '滚动' : '翻页', style: TextStyle(color: fg, fontSize: 13)),
-                  onPressed: () async {
-                    _progressChapter = shownChapter;
-                    _currentChapter = shownChapter;
-                    await settings.set(scrollMode: !_scrollMode);
+                  icon: Icon(isNight ? Icons.light_mode : Icons.dark_mode, color: fg, size: 18),
+                  label: Text('夜间', style: TextStyle(color: fg, fontSize: 13)),
+                  onPressed: () {
+                    final nightIdx = ReaderSettings.themes.indexWhere((t) => t.name == '夜间');
+                    settings.set(themeIndex: isNight ? 0 : nightIdx);
                   },
                 ),
                 TextButton.icon(
-                  icon: Icon(Icons.palette_outlined, color: fg, size: 18),
-                  label: Text(settings.theme.name, style: TextStyle(color: fg, fontSize: 13)),
+                  icon: Icon(Icons.settings_outlined, color: fg, size: 18),
+                  label: Text('设置', style: TextStyle(color: fg, fontSize: 13)),
                   onPressed: () => _showSettings(settings),
                 ),
               ],
@@ -784,83 +863,144 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       context: context,
       isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => Padding(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 40),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('字号（${settings.fontSize.round()}）', style: const TextStyle(fontWeight: FontWeight.bold)),
-              Slider(
-                value: settings.fontSize.clamp(14.0, 32.0),
-                min: 14,
-                max: 32,
-                divisions: 18,
-                onChanged: (v) {
-                  settings.set(fontSize: v);
-                  setSheet(() {});
-                },
-              ),
-              Text('行距（${settings.lineHeight.toStringAsFixed(1)}）', style: const TextStyle(fontWeight: FontWeight.bold)),
-              Slider(
-                value: settings.lineHeight,
-                min: 1.2,
-                max: 2.4,
-                divisions: 12,
-                onChanged: (v) {
-                  settings.set(lineHeight: v);
-                  setSheet(() {});
-                },
-              ),
-              const Text('主题', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 12,
+        builder: (ctx, setSheet) {
+          void apply(void Function() fn) {
+            setSheet(() {
+              fn();
+            });
+          }
+
+          Widget label(String text) => SizedBox(
+                width: 44,
+                child: Text(text, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
+              );
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  for (var i = 0; i < ReaderSettings.themes.length; i++)
-                    GestureDetector(
-                      onTap: () {
-                        settings.set(themeIndex: i);
-                        setSheet(() {});
-                      },
-                      child: Container(
-                        width: 46,
-                        height: 46,
-                        decoration: BoxDecoration(
-                          color: Color(ReaderSettings.themes[i].bg),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: settings.themeIndex == i ? const Color(0xFF2E7D5B) : Colors.grey.shade400,
-                            width: settings.themeIndex == i ? 2.5 : 1,
-                          ),
-                        ),
-                        child: Center(
-                          child: Text('文', style: TextStyle(color: Color(ReaderSettings.themes[i].fg), fontSize: 18)),
+                  Row(
+                    children: [
+                      label('亮度'),
+                      Expanded(
+                        child: Slider(
+                          value: settings.brightness,
+                          min: 0.3,
+                          max: 1.0,
+                          onChanged: (v) => apply(() => settings.set(brightness: v)),
                         ),
                       ),
-                    ),
+                      IconButton(
+                        icon: Icon(Icons.visibility_outlined,
+                            color: settings.eyeProtect ? const Color(0xFF2E7D5B) : Colors.grey.shade600),
+                        tooltip: '护眼模式',
+                        onPressed: () => apply(() => settings.set(eyeProtect: !settings.eyeProtect)),
+                      ),
+                      const SizedBox(width: 4),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      label('字号'),
+                      IconButton(
+                        icon: const Icon(Icons.text_decrease),
+                        onPressed: settings.fontSize > 14
+                            ? () => apply(() => settings.set(fontSize: settings.fontSize - 1))
+                            : null,
+                      ),
+                      SizedBox(
+                        width: 40,
+                        child: Text('${settings.fontSize.round()}', textAlign: TextAlign.center),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.text_increase),
+                        onPressed: settings.fontSize < 32
+                            ? () => apply(() => settings.set(fontSize: settings.fontSize + 1))
+                            : null,
+                      ),
+                    ],
+                  ),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      label('颜色'),
+                      const SizedBox(width: 4),
+                      for (var i = 0; i < ReaderSettings.themes.length; i++)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          child: GestureDetector(
+                            onTap: () => apply(() => settings.set(themeIndex: i)),
+                            child: Container(
+                              width: 38,
+                              height: 38,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Color(ReaderSettings.themes[i].bg),
+                                border: Border.all(
+                                  color: settings.themeIndex == i
+                                      ? const Color(0xFF2E7D5B)
+                                      : Colors.grey.shade400,
+                                  width: settings.themeIndex == i ? 2.5 : 1,
+                                ),
+                              ),
+                              child: Center(
+                                child: Text('文',
+                                    style: TextStyle(
+                                        color: Color(ReaderSettings.themes[i].fg), fontSize: 15)),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      label('翻页'),
+                      Expanded(
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          children: [
+                            for (var i = 0; i < ReaderSettings.pageAnims.length; i++)
+                              ChoiceChip(
+                                visualDensity: VisualDensity.compact,
+                                label: Text(ReaderSettings.pageAnims[i]),
+                                selected: settings.pageAnimIndex == i,
+                                onSelected: (_) {
+                                  _progressChapter = _scrollMode ? _visibleChapter() : _currentChapter;
+                                  _currentChapter = _progressChapter;
+                                  apply(() => settings.set(pageAnimIndex: i));
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      label('行距'),
+                      Expanded(
+                        child: Slider(
+                          value: settings.lineHeight,
+                          min: 1.2,
+                          max: 2.4,
+                          divisions: 12,
+                          label: settings.lineHeight.toStringAsFixed(1),
+                          onChanged: (v) => apply(() => settings.set(lineHeight: v)),
+                        ),
+                      ),
+                    ],
+                  ),
                 ],
               ),
-              const SizedBox(height: 16),
-              const Text('翻页动画（翻页模式生效）', style: TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 10,
-                children: [
-                  for (var i = 0; i < ReaderSettings.pageAnims.length; i++)
-                    ChoiceChip(
-                      label: Text(ReaderSettings.pageAnims[i]),
-                      selected: settings.pageAnimIndex == i,
-                      onSelected: (_) {
-                        settings.set(pageAnimIndex: i);
-                        setSheet(() {});
-                      },
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }

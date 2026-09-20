@@ -69,13 +69,19 @@ class _DetailPageState extends State<DetailPage> {
     final detail = _detail;
     if (detail == null || _chapters.isEmpty) return;
     final shelf = context.read<ShelfState>();
-    await shelf.addFromDetail(detail);
-    if (!mounted) return;
+    // 不再自动加入书架：在架用书架条目，不在架用临时条目（只记浏览历史）
     final book = shelf.byKey(StorageKeys.keyOf(detail)) ??
         {
+          'key': StorageKeys.keyOf(detail),
           'name': detail.name,
           'author': detail.author,
+          'coverUrl': detail.coverUrl,
+          'intro': detail.intro,
+          'lastChapter': detail.lastChapter,
+          'bookUrl': detail.bookUrl,
+          'tocUrl': detail.tocUrl,
           'sourceUrl': detail.sourceUrl,
+          'sourceName': detail.sourceName,
         };
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ReaderPage(

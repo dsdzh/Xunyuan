@@ -164,6 +164,21 @@ class ShelfState extends ChangeNotifier {
   bool isInShelf(String name, String author, String sourceUrl) =>
       StorageService.instance.getBook(StorageService.bookKey(name, author, sourceUrl)) != null;
 
+  /// 阅读页内手动"加入书架"：仅在用户点击时调用，阅读本身不再自动加架。
+  /// 返回 true 表示本次新增成功，false 表示已在书架。
+  Future<bool> addFromReader(Map<String, dynamic> book) async {
+    final key = book['key']?.toString() ??
+        StorageService.bookKey('${book['name'] ?? ''}', '${book['author'] ?? ''}', '${book['sourceUrl'] ?? ''}');
+    if (StorageService.instance.getBook(key) != null) return false;
+    final entry = Map<String, dynamic>.of(book)..['key'] = key;
+    entry['durChapterIndex'] ??= 0;
+    entry['durChapterTitle'] ??= '';
+    entry['lastAddTime'] = DateTime.now().millisecondsSinceEpoch;
+    await StorageService.instance.putBook(entry);
+    await load();
+    return true;
+  }
+
   /// 退出阅读时记录浏览历史；书在书架则同步书架进度。
   /// [chapterProgress] 为章内进度比例（0~1），用于下次直接回到上次阅读位置。
   Future<void> recordRead(Map<String, dynamic> book, int chapterIndex, String chapterTitle, double chapterProgress) async {
@@ -208,33 +223,53 @@ class ReaderSettings extends ChangeNotifier {
   double fontSize = 20;
   double lineHeight = 1.6;
   int themeIndex = 0;
-  bool scrollMode = true; // true 滚动 false 翻页
-  int pageAnimIndex = 0; // 0 仿真 1 覆盖 2 平移
+  int pageAnimIndex = 0; // 0 仿真 1 覆盖 2 平移 3 上下(滚动) 4 无动画
+  double brightness = 1.0; // 阅读页亮度遮罩 0.3~1.0
+  bool eyeProtect = false;
 
-  static const pageAnims = ['仿真', '覆盖', '平移'];
+  static const pageAnims = ['仿真', '覆盖', '平移', '上下', '无动画'];
+
+  bool get scrollMode => pageAnimIndex == 3;
 
   Future<void> load() async {
     final s = StorageService.instance;
     fontSize = (s.setting('fontSize', def: 20) as num).toDouble();
     lineHeight = (s.setting('lineHeight', def: 1.6) as num).toDouble();
     themeIndex = s.setting('themeIndex', def: 0) as int;
-    scrollMode = s.setting('scrollMode', def: true) as bool;
-    pageAnimIndex = s.setting('pageAnimIndex', def: 0) as int;
+    var anim = s.setting('pageAnimIndex', def: 3) as int;
+    final legacyScroll = s.setting('scrollMode');
+    if (legacyScroll != null) {
+      // 旧版只有 仿真/覆盖/平移 三档 + scrollMode 开关，一次性迁移
+      anim = (legacyScroll as bool) ? 3 : (s.setting('pageAnimIndex', def: 0) as int).clamp(0, 2);
+      await s.putSetting('pageAnimIndex', anim);
+    }
+    pageAnimIndex = anim;
+    brightness = (s.setting('brightness', def: 1.0) as num).toDouble();
+    eyeProtect = s.setting('eyeProtect', def: false) as bool;
     notifyListeners();
   }
 
-  Future<void> set({double? fontSize, double? lineHeight, int? themeIndex, bool? scrollMode, int? pageAnimIndex}) async {
+  Future<void> set({
+    double? fontSize,
+    double? lineHeight,
+    int? themeIndex,
+    int? pageAnimIndex,
+    double? brightness,
+    bool? eyeProtect,
+  }) async {
     if (fontSize != null) this.fontSize = fontSize;
     if (lineHeight != null) this.lineHeight = lineHeight;
     if (themeIndex != null) this.themeIndex = themeIndex;
-    if (scrollMode != null) this.scrollMode = scrollMode;
     if (pageAnimIndex != null) this.pageAnimIndex = pageAnimIndex;
+    if (brightness != null) this.brightness = brightness;
+    if (eyeProtect != null) this.eyeProtect = eyeProtect;
     final s = StorageService.instance;
     if (fontSize != null) await s.putSetting('fontSize', fontSize);
     if (lineHeight != null) await s.putSetting('lineHeight', lineHeight);
     if (themeIndex != null) await s.putSetting('themeIndex', themeIndex);
-    if (scrollMode != null) await s.putSetting('scrollMode', scrollMode);
     if (pageAnimIndex != null) await s.putSetting('pageAnimIndex', pageAnimIndex);
+    if (brightness != null) await s.putSetting('brightness', brightness);
+    if (eyeProtect != null) await s.putSetting('eyeProtect', eyeProtect);
     notifyListeners();
   }
 
