@@ -716,7 +716,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
             ),
             IconButton(
               icon: Icon(_inShelf ? Icons.bookmark_added : Icons.bookmark_add_outlined, color: fg),
-              tooltip: _inShelf ? '已在书架' : '加入书架',
+              tooltip: _inShelf ? '移出书架' : '加入书架',
               onPressed: _toggleShelf,
             ),
             IconButton(icon: Icon(Icons.list, color: fg), tooltip: '目录', onPressed: _showTocSheet),
@@ -735,7 +735,14 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   Future<void> _toggleShelf() async {
     if (_inShelf) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已在书架中')));
+      final key = widget.book['key']?.toString() ??
+          StorageService.bookKey('${widget.book['name'] ?? ''}', '${widget.book['author'] ?? ''}',
+              '${widget.book['sourceUrl'] ?? ''}');
+      await _shelf.remove(key);
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('已移出书架，进度保留在浏览记录')));
       return;
     }
     final added = await _shelf.addFromReader(Map<String, dynamic>.of(widget.book));
