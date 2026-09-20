@@ -480,11 +480,17 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                 return GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onHorizontalDragEnd: (d) {
+                    if (_menuVisible) return;
                     final v = d.primaryVelocity ?? 0;
                     if (v < -200) _pagedTurn(pages, 1);
                     if (v > 200) _pagedTurn(pages, -1);
                   },
                   onTapUp: (d) {
+                    // 菜单/功能栏打开时点击只关闭菜单，不翻页
+                    if (_menuVisible) {
+                      setState(() => _menuVisible = false);
+                      return;
+                    }
                     final w = constraints.maxWidth;
                     if (d.localPosition.dx < w / 3) {
                       _pagedTurn(pages, -1);
@@ -649,30 +655,34 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       return _pagesCache!;
     }
     final pageWidth = constraints.maxWidth;
-    final pageHeight = constraints.maxHeight - settings.fontSize * 1.2;
+    final pageHeight = constraints.maxHeight - settings.fontSize * 1.2 - 4;
     final style = TextStyle(fontSize: settings.fontSize, height: settings.lineHeight);
     final pages = <String>[];
     var current = <String>[];
     // 章标题只占首页顶部空间
     var currentHeight = settings.fontSize * 2.5;
+    // 页面文本用 \n\n 连接，段间实际占一整空行，测量必须与渲染一致，否则底部文字被裁
+    final sepH = settings.fontSize * settings.lineHeight;
 
     double paraHeight(String p) {
       final tp = TextPainter(text: TextSpan(text: p, style: style), maxLines: null, textDirection: TextDirection.ltr)
         ..layout(maxWidth: pageWidth);
-      final h = tp.height + settings.fontSize * 0.7;
+      final h = tp.height;
       tp.dispose();
       return h;
     }
 
     for (final p in chapterParagraphs) {
-      final h = paraHeight(p);
-      if (currentHeight + h > pageHeight && current.isNotEmpty) {
+      final ph = paraHeight(p);
+      final withSep = ph + (current.isEmpty ? 0 : sepH);
+      if (currentHeight + withSep > pageHeight && current.isNotEmpty) {
         pages.add(current.join('\n\n'));
-        current = [];
-        currentHeight = 0;
+        current = [p];
+        currentHeight = ph;
+      } else {
+        current.add(p);
+        currentHeight += withSep;
       }
-      current.add(p);
-      currentHeight += h;
     }
     if (current.isNotEmpty) pages.add(current.join('\n\n'));
     if (pages.isEmpty) pages.add('　');
@@ -833,8 +843,23 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
           child: Column(
             children: [
               Padding(
-                padding: const EdgeInsets.all(12),
-                child: Text('目录（${_chapters.length} 章）', style: const TextStyle(fontWeight: FontWeight.bold)),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: Text('目录（${_chapters.length} 章）',
+                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    TextButton.icon(
+                      icon: const Icon(Icons.arrow_back, size: 18),
+                      label: const Text('返回'),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
               ),
               Expanded(
                 child: ListView.builder(
