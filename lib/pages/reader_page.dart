@@ -541,7 +541,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                                       alignment: dir == 1 ? Alignment.centerLeft : Alignment.centerRight,
                                       transform: Matrix4.identity()
                                         ..setEntry(3, 2, 0.0012)
-                                        ..translate((1 - t) * w * dir)
+                                        ..translateByDouble((1 - t) * w * dir, 0, 0, 1)
                                         ..rotateY((1 - t) * 0.35 * (dir == 1 ? -1 : 1)),
                                       child: mask(newPage),
                                     ),

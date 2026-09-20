@@ -164,7 +164,7 @@ class _BookshelfPageState extends State<BookshelfPage> {
   Widget _buildList(ShelfState shelf) {
     return ListView.separated(
       itemCount: shelf.books.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, i) {
         final book = shelf.books[i];
         final key = book['key'].toString();

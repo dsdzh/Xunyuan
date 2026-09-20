@@ -239,7 +239,7 @@ class _DetailPageState extends State<DetailPage> {
     return ClipRRect(
       borderRadius: BorderRadius.circular(6),
       child: Image.network(url, width: w, height: h, fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => SizedBox(
+          errorBuilder: (_, _, _) => SizedBox(
                 width: w,
                 height: h,
                 child: Container(color: Colors.grey.shade300),

@@ -57,7 +57,7 @@ class BookTile extends StatelessWidget {
                 ],
               ),
             ),
-            if (trailing != null) trailing!,
+            ?trailing,
           ],
         ),
       ),
@@ -84,7 +84,7 @@ class BookCover extends StatelessWidget {
         width: width,
         height: height,
         fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => _placeholder(width, height),
+        errorBuilder: (_, _, _) => _placeholder(width, height),
         loadingBuilder: (_, child, prog) => prog == null ? child : _placeholder(width, height),
       ),
     );

@@ -32,6 +32,7 @@ class SourcePage extends StatelessWidget {
       }
       return;
     }
+    if (!context.mounted) return;
     await _importFromText(context, text);
   }
 
@@ -49,6 +50,7 @@ class SourcePage extends StatelessWidget {
       }
       return;
     }
+    if (!context.mounted) return;
     await _importFromText(context, text);
   }
 
@@ -71,6 +73,7 @@ class SourcePage extends StatelessWidget {
       ),
     );
     if (url == null || url.trim().isEmpty) return;
+    if (!context.mounted) return;
     final state = context.read<SourceState>();
     try {
       final count = await state.importFromUrl(url);
