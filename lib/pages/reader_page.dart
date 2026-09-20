@@ -376,7 +376,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                   children: [
                     Positioned.fill(
                       child: SafeArea(
-                        child: _scrollMode ? _buildScrollReader(fg, settings) : _buildPagedReader(fg, settings),
+                        child: _scrollMode ? _buildScrollReader(fg, settings) : _buildPagedReader(bg, fg, settings),
                       ),
                     ),
                     if (_menuVisible) _buildTopBar(bg, fg),
@@ -454,7 +454,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildPagedReader(Color fg, ReaderSettings settings) {
+  Widget _buildPagedReader(Color bg, Color fg, ReaderSettings settings) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 48, 24, 48),
       child: _chapterParagraphs.isEmpty
@@ -514,6 +514,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                                   pages[_readPage], _readPage + 1, pages.length, _readPage == 0, fg, settings);
                               final oldPage =
                                   _pageView(from.text, from.pageNo, from.total, from.showTitle, fg, settings);
+                              // 动画期间给每页垫不透明底色，防止新旧页文字互相透出叠影
+                              Widget mask(Widget c) => ColoredBox(color: bg, child: c);
                               Widget slideIn(Widget child, double dx) =>
                                   Transform.translate(offset: Offset(dx, 0), child: child);
                               Widget slideOut(Widget child, double dx) =>
@@ -523,25 +525,25 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                                   // 覆盖：旧页静止，新页盖上来
                                   return Stack(children: [
                                     oldPage,
-                                    slideIn(newPage, (1 - t) * w * dir),
+                                    slideIn(mask(newPage), (1 - t) * w * dir),
                                   ]);
                                 case 2:
                                   // 平移：新旧页一起移动
                                   return Stack(children: [
-                                    slideOut(oldPage, -t * w * dir),
-                                    slideIn(newPage, (1 - t) * w * dir),
+                                    slideOut(mask(oldPage), -t * w * dir),
+                                    slideIn(mask(newPage), (1 - t) * w * dir),
                                   ]);
                                 default:
                                   // 仿真：平移 + 透视旋转 + 边缘阴影近似卷页
                                   return Stack(children: [
-                                    slideOut(oldPage, -t * w * dir),
+                                    slideOut(mask(oldPage), -t * w * dir),
                                     Transform(
                                       alignment: dir == 1 ? Alignment.centerLeft : Alignment.centerRight,
                                       transform: Matrix4.identity()
                                         ..setEntry(3, 2, 0.0012)
                                         ..translate((1 - t) * w * dir)
                                         ..rotateY((1 - t) * 0.35 * (dir == 1 ? -1 : 1)),
-                                      child: newPage,
+                                      child: mask(newPage),
                                     ),
                                     Positioned.fill(
                                       child: IgnorePointer(
