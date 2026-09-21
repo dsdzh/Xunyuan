@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io' as io;
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:fast_gbk/fast_gbk.dart';
@@ -59,15 +60,40 @@ class HttpClient {
     );
     _dio = Dio(base);
     // 不少小说站只下发叶子证书，浏览器靠 AIA 补链而 BoringSSL 直接报
-    // CERTIFICATE_VERIFY_FAILED，握手失败时走这条放宽校验的重试通道。
+    // CERTIFICATE_VERIFY_FAILED，握手失败时走这条重试通道。
+    // 通道内不做无条件放行：按主机 TOFU 钉证，防止中间人攻击。
     _lenientDio = Dio(base)
       ..httpClientAdapter = IOHttpClientAdapter(
         createHttpClient: () {
           final client = io.HttpClient(context: io.SecurityContext(withTrustedRoots: true));
-          client.badCertificateCallback = (_, _, _) => true;
+          client.badCertificateCallback = _trustOnFirstFail;
           return client;
         },
       );
+  }
+
+  /// host -> 该主机严格校验失败时见过的证书指纹。
+  /// 首次失败无法区分"缺中间证书的破链"与"中间人"，信任并钉住；
+  /// 之后同主机只接受已钉证书——攻击者没有服务器私钥，伪造不了同指纹证书。
+  /// 钉证窗口内允许记录同一条链上的其余不可信证书，窗口外一律严格。
+  /// 仅在内存中生效，进程重启后重新钉证。
+  final Map<String, _TofuPins> _tofuPins = {};
+
+  bool _trustOnFirstFail(io.X509Certificate cert, String host, int port) {
+    final fp = crypto.sha256.convert(cert.der).toString();
+    final now = DateTime.now();
+    final pins = _tofuPins[host];
+    if (pins == null) {
+      if (_tofuPins.length > 500) _tofuPins.clear();
+      _tofuPins[host] = _TofuPins({fp}, now);
+      return true;
+    }
+    if (pins.fingerprints.contains(fp)) return true;
+    if (now.difference(pins.firstSeen).inSeconds <= 10 && pins.fingerprints.length <= 8) {
+      pins.fingerprints.add(fp);
+      return true;
+    }
+    return false;
   }
 
   static bool _isCertFailure(DioException e) {
@@ -175,4 +201,10 @@ class HttpClient {
       return utf8.encode(s);
     }
   }
+}
+
+class _TofuPins {
+  final Set<String> fingerprints;
+  final DateTime firstSeen;
+  _TofuPins(this.fingerprints, this.firstSeen);
 }

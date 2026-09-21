@@ -39,7 +39,12 @@ class SourceState extends ChangeNotifier {
   }
 
   Future<int> importFromUrl(String url) async {
-    final resp = await HttpClient.instance.get(url.trim());
+    final trimmed = url.trim();
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      throw const FormatException('仅支持 http/https 书源链接');
+    }
+    final resp = await HttpClient.instance.get(trimmed);
     return importText(resp.body);
   }
 
