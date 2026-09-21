@@ -49,9 +49,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   // 翻页动画状态
   late final AnimationController _turnCtrl =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 280));
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
   ({String text, int pageNo, int total, bool showTitle})? _turnFrom;
   int _turnDir = 1;
+  bool _dragTurnActive = false;
+  double _dragAccum = 0;
 
   double _progress = 0;
   int _progressChapter = 0;
@@ -67,8 +69,19 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     super.initState();
     _shelf = context.read<ShelfState>();
     _turnCtrl.addListener(() {
-      if (_turnCtrl.status == AnimationStatus.completed && _turnFrom != null) {
-        setState(() => _turnFrom = null);
+      if (_turnFrom == null) return;
+      if (_turnCtrl.status == AnimationStatus.completed) {
+        setState(() {
+          _turnFrom = null;
+          _dragTurnActive = false;
+        });
+      } else if (_turnCtrl.status == AnimationStatus.dismissed && _dragTurnActive) {
+        // 拖到一半松手回弹：退回原页
+        setState(() {
+          _readPage = _turnFrom!.pageNo - 1;
+          _turnFrom = null;
+          _dragTurnActive = false;
+        });
       }
     });
     _progressChapter = (widget.startIndex ?? _intOf(widget.book['durChapterIndex'])).clamp(0, 1 << 30);
@@ -479,9 +492,56 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                 _progressChapter = _currentChapter;
                 return GestureDetector(
                   behavior: HitTestBehavior.opaque,
+                  onHorizontalDragStart: (d) {
+                    _dragAccum = 0;
+                    if (_turnCtrl.isAnimating) {
+                      _dragTurnActive = false;
+                      _turnCtrl.stop();
+                      setState(() => _turnFrom = null);
+                    }
+                  },
+                  onHorizontalDragUpdate: (d) {
+                    if (_menuVisible || settings.pageAnimIndex == 4) return;
+                    _dragAccum += d.primaryDelta ?? 0;
+                    if (!_dragTurnActive) {
+                      if (_dragAccum.abs() < 12) return;
+                      final dir = _dragAccum < 0 ? 1 : -1;
+                      final target = _readPage + dir;
+                      if (target < 0 || target >= pages.length) return;
+                      setState(() {
+                        _turnFrom = (
+                          text: pages[_readPage],
+                          pageNo: _readPage + 1,
+                          total: pages.length,
+                          showTitle: _readPage == 0
+                        );
+                        _turnDir = dir;
+                        _readPage = target;
+                        _dragTurnActive = true;
+                      });
+                    }
+                    final frac = (_dragAccum.abs() / constraints.maxWidth).clamp(0.0, 0.999);
+                    _turnCtrl.value = math.max(frac, 0.01);
+                  },
                   onHorizontalDragEnd: (d) {
                     if (_menuVisible) return;
                     final v = d.primaryVelocity ?? 0;
+                    if (_dragTurnActive) {
+                      final val = _turnCtrl.value;
+                      // 甩速与翻页同向为正，投影最终位置决定继续翻还是回弹
+                      final fling = -v * _turnDir;
+                      final projected = val + fling / 4000;
+                      if (projected > 0.5) {
+                        final remain = (1 - val).clamp(0.05, 1.0);
+                        _turnCtrl.animateTo(1,
+                            duration: Duration(milliseconds: (260 * remain).round().clamp(90, 260)),
+                            curve: Curves.easeOutCubic);
+                      } else {
+                        _turnCtrl.animateTo(0,
+                            duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
+                      }
+                      return;
+                    }
                     if (v < -200) _pagedTurn(pages, 1);
                     if (v > 200) _pagedTurn(pages, -1);
                   },
@@ -506,7 +566,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                         : AnimatedBuilder(
                             animation: _turnCtrl,
                             builder: (context, _) {
-                              final t = Curves.easeOutCubic.transform(_turnCtrl.value);
+                              final t = _turnCtrl.value;
                               final w = constraints.maxWidth;
                               final dir = _turnDir;
                               final from = _turnFrom!;
@@ -522,9 +582,15 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                                   Transform.translate(offset: Offset(dx, 0), child: child);
                               switch (settings.pageAnimIndex) {
                                 case 1:
-                                  // 覆盖：旧页静止，新页盖上来
+                                  // 覆盖：旧页轻微视差退让并压暗，新页盖上来
                                   return Stack(children: [
-                                    oldPage,
+                                    slideOut(oldPage, -t * w * 0.3 * dir),
+                                    Positioned.fill(
+                                      child: IgnorePointer(
+                                        child: ColoredBox(
+                                            color: Colors.black.withValues(alpha: 0.18 * (1 - t))),
+                                      ),
+                                    ),
                                     slideIn(mask(newPage), (1 - t) * w * dir),
                                   ]);
                                 case 2:
@@ -630,10 +696,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       _turnDir = dir;
       _readPage = target;
     });
-    _turnCtrl.forward(from: 0);
+    _turnCtrl.animateTo(1, duration: const Duration(milliseconds: 320), curve: Curves.easeInOutCubic);
   }
 
   void _stopTurnAnim() {
+    _dragTurnActive = false;
     if (_turnCtrl.isAnimating) _turnCtrl.stop();
     _turnFrom = null;
   }
