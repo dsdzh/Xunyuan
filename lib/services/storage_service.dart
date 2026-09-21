@@ -72,7 +72,10 @@ class StorageService {
   }
 
   // ---------- 书源健康度 ----------
-  static String _healthKey(String sourceUrl) => 'health::${Uri.parse(sourceUrl).host}';
+  static String _healthKey(String sourceUrl) {
+    final host = Uri.tryParse(sourceUrl)?.host;
+    return 'health::${host == null || host.isEmpty ? sourceUrl : host}';
+  }
 
   Map<String, dynamic>? getSourceHealth(String sourceUrl) {
     final v = _settings.get(_healthKey(sourceUrl));

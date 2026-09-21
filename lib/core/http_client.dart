@@ -70,7 +70,13 @@ class HttpClient {
           return client;
         },
       );
+    for (final d in [_dio, _lenientDio]) {
+      d.transformer = _SizeLimitTransformer();
+    }
   }
+
+  /// 正常页面/书源文件都在百 KB 级，超限只可能是恶意或异常大响应（内存 DoS）
+  static const maxResponseBytes = 20 * 1024 * 1024;
 
   /// host -> 该主机严格校验失败时见过的证书指纹。
   /// 首次失败无法区分"缺中间证书的破链"与"中间人"，信任并钉住；
@@ -123,7 +129,7 @@ class HttpClient {
     }..removeWhere((k, v) => v.isEmpty));
     try {
       final resp = await _execute((d) => d.get(url, options: options));
-      cookies.storeFrom(url, resp.headers['set-cookie']);
+      cookies.storeFrom(resp.realUri.toString(), resp.headers['set-cookie']);
       return PageResponse(
         decode(resp.data as List<int>, contentType: resp.headers.value(Headers.contentTypeHeader), hint: charsetHint),
         resp.statusCode ?? 0,
@@ -207,4 +213,39 @@ class _TofuPins {
   final Set<String> fingerprints;
   final DateTime firstSeen;
   _TofuPins(this.fingerprints, this.firstSeen);
+}
+
+/// 流式限长下载：content-length 声明超限直接掐断；
+/// 分块/谎报长度时在累计字节超限的瞬间取消订阅，不等整个大响应进内存
+class _SizeLimitTransformer extends BackgroundTransformer {
+  @override
+  Future transformResponse(RequestOptions options, ResponseBody responseBody) async {
+    final cl = responseBody.headers[Headers.contentLengthHeader];
+    final declared = (cl != null && cl.isNotEmpty) ? int.tryParse(cl.first) ?? 0 : 0;
+    if (declared > HttpClient.maxResponseBytes) {
+      await responseBody.stream.listen((_) {}).cancel(); // 取消订阅即断开连接
+      throw DioException(
+        requestOptions: options,
+        type: DioExceptionType.receiveTimeout,
+        error: Exception('响应体过大（${declared >> 20}MB），已中止下载'),
+      );
+    }
+    if (options.responseType == ResponseType.bytes) {
+      final builder = BytesBuilder(copy: false);
+      var total = 0;
+      await for (final chunk in responseBody.stream) {
+        total += chunk.length;
+        if (total > HttpClient.maxResponseBytes) {
+          throw DioException(
+            requestOptions: options,
+            type: DioExceptionType.receiveTimeout,
+            error: Exception('响应体超过 ${HttpClient.maxResponseBytes >> 20}MB 上限'),
+          );
+        }
+        builder.add(chunk);
+      }
+      return builder.takeBytes();
+    }
+    return super.transformResponse(options, responseBody);
+  }
 }

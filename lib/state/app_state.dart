@@ -32,6 +32,8 @@ class SourceState extends ChangeNotifier {
   /// 导入书源文本（JSON 数组 / JSONL）。返回导入数量。
   Future<int> importText(String text) async {
     final list = parseBookSources(text);
+    // 上限防御：异常/恶意大文件不致撑爆存储与内存
+    if (list.length > 10000) list.removeRange(10000, list.length);
     if (list.isEmpty) return 0;
     await StorageService.instance.importSources(list);
     await load();
