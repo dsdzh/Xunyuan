@@ -232,7 +232,10 @@ class _DetailPageState extends State<DetailPage> {
           borderRadius: BorderRadius.circular(6),
         ),
         alignment: Alignment.center,
-        child: Text((d?.name ?? widget.result.name).substring(0, 2),
+        child: Text(() {
+          final n = d?.name ?? widget.result.name;
+          return n.length <= 2 ? n : n.substring(0, 2);
+        }(),
             style: const TextStyle(fontSize: 22, color: Color(0xFF2E7D5B), fontWeight: FontWeight.bold)),
       );
     }

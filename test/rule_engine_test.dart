@@ -54,4 +54,15 @@ void main() {
     expect(RuleEngine.getString(html, 'tag.li[0]@text'), '甲');
     expect(RuleEngine.getString(html, 'tag.li[last]@text'), '乙');
   });
+
+  test('畸形书源：超 64 位数字下标/伪类不抛异常', () {
+    const html = '<ul><li>甲</li><li>乙</li><li>丙</li></ul>';
+    // int.parse 会 FormatException，必须走 tryParse 兜底返回空
+    expect(RuleEngine.getString(html, 'tag.li[0-99999999999999999999]@text'), '');
+    expect(RuleEngine.getString(html, 'tag.li[last-99999999999999999999]@text'), '');
+    expect(RuleEngine.getString(html, 'tag.li[99999999999999999999]@text'), '');
+    expect(RuleEngine.getString(html, 'tag.li:nth-child(99999999999999999999)@text'), '');
+    // 合法范围仍是原语义
+    expect(RuleEngine.getString(html, 'tag.li[0-1]@text'), '甲');
+  });
 }

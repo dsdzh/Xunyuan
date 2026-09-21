@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:html/dom.dart' as h;
+
 import '../models/book_source.dart';
 import 'http_client.dart';
 import 'rule_engine.dart';
@@ -294,7 +296,16 @@ class BookSourceEngine {
     final isJson = ContentAnalyzer.isJsonContent(body);
     List<dynamic> items;
     if (listRule.trim().isEmpty) {
-      items = isJson ? [jsonDecode(body)] : [body];
+      dynamic whole = body;
+      if (isJson) {
+        // 防截断/JSONP 伪 JSON 页抛 FormatException
+        try {
+          whole = jsonDecode(body);
+        } catch (_) {
+          whole = body;
+        }
+      }
+      items = [whole];
     } else {
       items = RuleEngine.getElements(body, listRule, isJson: isJson);
     }
@@ -352,8 +363,9 @@ class BookSourceEngine {
   String _itemToText(dynamic item) {
     if (item is String) return item;
     if (item is Map || item is List) return jsonEncode(item);
-    // Element
-    return item.outerHtml.toString();
+    if (item is h.Element) return item.outerHtml;
+    // 恶意/畸形规则可让列表元素退化为数字等标量，不能假设是 Element
+    return item?.toString() ?? '';
   }
 
   /// JSON 源的 URL/文本模板：`/book/{{$.book_id}}/chapters` 用当前对象字段填充

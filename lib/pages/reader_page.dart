@@ -69,7 +69,13 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     super.initState();
     _shelf = context.read<ShelfState>();
     _turnCtrl.addListener(() {
-      if (_turnFrom == null) return;
+      if (_turnFrom == null) {
+        if (_turnCtrl.status == AnimationStatus.completed ||
+            _turnCtrl.status == AnimationStatus.dismissed) {
+          _dragTurnActive = false;
+        }
+        return;
+      }
       if (_turnCtrl.status == AnimationStatus.completed) {
         setState(() {
           _turnFrom = null;
@@ -323,6 +329,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   Future<void> _loadChapterForPaged(int idx) async {
     if (idx < 0 || idx >= _chapters.length) return;
+    _stopTurnAnim();
     List<String> paras;
     try {
       paras = _splitParagraphs(await _chapterContent(idx));
@@ -542,8 +549,18 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                       }
                       return;
                     }
-                    if (v < -200) _pagedTurn(pages, 1);
-                    if (v > 200) _pagedTurn(pages, -1);
+                    // 章边界/无动画模式下拖拽未激活：按甩速或位移判定翻页，
+                    // 慢速拖到底再松手（甩速≈0）也要能翻章
+                    final crossed = _dragAccum.abs() > constraints.maxWidth * 0.35;
+                    if (v < -200 || (crossed && _dragAccum < 0)) _pagedTurn(pages, 1);
+                    if (v > 200 || (crossed && _dragAccum > 0)) _pagedTurn(pages, -1);
+                  },
+                  onHorizontalDragCancel: () {
+                    // 手势被系统打断（返回手势/下拉栏）时回弹，避免页面卡在半翻状态
+                    if (_dragTurnActive && _turnCtrl.value > 0) {
+                      _turnCtrl.animateTo(0,
+                          duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
+                    }
                   },
                   onTapUp: (d) {
                     // 菜单/功能栏打开时点击只关闭菜单，不翻页
@@ -684,11 +701,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     // 动画未播完又翻页：立即结束上一次动画，直接落到新页，避免两页文字叠影
     final noAnim = (_lastSettings?.pageAnimIndex ?? 0) == 4 || _turnCtrl.isAnimating;
     if (noAnim) {
-      _turnCtrl.stop();
-      setState(() {
-        _turnFrom = null;
-        _readPage = target;
-      });
+      _stopTurnAnim();
+      setState(() => _readPage = target);
       return;
     }
     setState(() {
@@ -703,6 +717,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     _dragTurnActive = false;
     if (_turnCtrl.isAnimating) _turnCtrl.stop();
     _turnFrom = null;
+    _turnCtrl.value = 0;
   }
 
   // _paginate 记忆化：段落列表 / 字号 / 行距 / 页面尺寸任一变化才重算
@@ -853,8 +868,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                           }
                           setState(() => _progress = v);
                         } else {
+                          _stopTurnAnim();
                           setState(() {
-                            _turnFrom = null;
                             _readPage = (_pagesTotal <= 1)
                                 ? 0
                                 : (v * (_pagesTotal - 1)).round().clamp(0, _pagesTotal - 1);

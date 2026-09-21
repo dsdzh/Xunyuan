@@ -61,9 +61,10 @@ class StorageService {
   Future<void> setSourceEnabled(String url, bool enabled) async {
     final raw = _sources.get(url);
     if (raw == null) return;
-    final j = jsonDecode(raw) as Map<String, dynamic>;
-    j['enabled'] = enabled;
-    await _sources.put(url, jsonEncode(j));
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) return; // 缓存条目损坏时静默跳过，调用方不 catch
+    decoded['enabled'] = enabled;
+    await _sources.put(url, jsonEncode(decoded));
   }
 
   String exportAllSources() {

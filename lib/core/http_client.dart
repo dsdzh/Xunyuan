@@ -216,7 +216,7 @@ class _TofuPins {
 }
 
 /// 流式限长下载：content-length 声明超限直接掐断；
-/// 分块/谎报长度时在累计字节超限的瞬间取消订阅，不等整个大响应进内存
+/// 分块/谎报长度时在累计字节超限的瞬间抛错断流，所有响应类型（文本/JSON/字节）统一生效
 class _SizeLimitTransformer extends BackgroundTransformer {
   @override
   Future transformResponse(RequestOptions options, ResponseBody responseBody) async {
@@ -230,22 +230,18 @@ class _SizeLimitTransformer extends BackgroundTransformer {
         error: Exception('响应体过大（${declared >> 20}MB），已中止下载'),
       );
     }
-    if (options.responseType == ResponseType.bytes) {
-      final builder = BytesBuilder(copy: false);
-      var total = 0;
-      await for (final chunk in responseBody.stream) {
-        total += chunk.length;
-        if (total > HttpClient.maxResponseBytes) {
-          throw DioException(
-            requestOptions: options,
-            type: DioExceptionType.receiveTimeout,
-            error: Exception('响应体超过 ${HttpClient.maxResponseBytes >> 20}MB 上限'),
-          );
-        }
-        builder.add(chunk);
+    var total = 0;
+    responseBody.stream = responseBody.stream.map((chunk) {
+      total += chunk.length;
+      if (total > HttpClient.maxResponseBytes) {
+        throw DioException(
+          requestOptions: options,
+          type: DioExceptionType.receiveTimeout,
+          error: Exception('响应体超过 ${HttpClient.maxResponseBytes >> 20}MB 上限'),
+        );
       }
-      return builder.takeBytes();
-    }
+      return chunk;
+    });
     return super.transformResponse(options, responseBody);
   }
 }

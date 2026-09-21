@@ -301,7 +301,7 @@ class RuleEngine {
     if (css == null || css.isEmpty) return [];
     // package:html 的 :nth-child 以 0 起算，Legado/jsoup 惯例以 1 起算，需平移
     css = css.replaceAllMapped(RegExp(r':nth-child\((\d+)\)'), (m) {
-      final n = int.parse(m.group(1)!);
+      final n = int.tryParse(m.group(1)!) ?? 0; // 超长数字直译让下面 try 兜住
       if (n <= 0) return m.group(0)!;
       return n == 1 ? ':first-child' : ':nth-child(${n - 1})';
     });
@@ -378,17 +378,23 @@ class RuleEngine {
     if (expr == 'last') return list.isEmpty ? [] : [list.last];
     final range = RegExp(r'^(\d+)-(\d+)$').firstMatch(expr);
     if (range != null) {
-      final s = int.parse(range.group(1)!);
-      final e = int.parse(range.group(2)!);
-      return list.sublist(s.clamp(0, list.length), (e + 1).clamp(0, list.length));
+      final s = int.tryParse(range.group(1)!);
+      final e = int.tryParse(range.group(2)!);
+      if (s == null || e == null || s < 0 || e < 0) return [];
+      final from = s > list.length ? list.length : s;
+      // e+1 先与长度比较，避免巨大 e 加法回绕
+      final to = e >= list.length - 1 ? list.length : e + 1;
+      return from <= to ? list.sublist(from, to) : [];
     }
     final lastMinus = RegExp(r'^last-(\d+)$').firstMatch(expr);
     if (lastMinus != null) {
-      final i = list.length - 1 - int.parse(lastMinus.group(1)!);
-      return (i >= 0 && i < list.length) ? [list[i]] : [];
+      final k = int.tryParse(lastMinus.group(1)!);
+      if (k == null || k < 0 || k >= list.length) return [];
+      return [list[list.length - 1 - k]];
     }
     final n = int.tryParse(expr);
     if (n != null) return (n >= 0 && n < list.length) ? [list[n]] : [];
+    if (RegExp(r'^\d+$').hasMatch(expr)) return []; // 超 64 位纯数字 = 必然越界
     return list;
   }
 
