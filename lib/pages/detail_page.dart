@@ -65,7 +65,7 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
-  Future<void> _openReader(int index) async {
+  Future<void> _openReader(int index, {bool resume = true}) async {
     final detail = _detail;
     if (detail == null || _chapters.isEmpty) return;
     final shelf = context.read<ShelfState>();
@@ -89,6 +89,7 @@ class _DetailPageState extends State<DetailPage> {
         source: widget.source,
         chapters: _chapters,
         startIndex: index,
+        resumeFromSaved: resume,
       ),
     ));
   }
@@ -206,7 +207,7 @@ class _DetailPageState extends State<DetailPage> {
                           ListTile(
                             dense: true,
                             title: Text(c.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-                            onTap: () => _openReader(c.index),
+                            onTap: () => _openReader(c.index, resume: false),
                           ),
                     ],
                   ),

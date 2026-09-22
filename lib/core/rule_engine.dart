@@ -624,8 +624,22 @@ class RuleEngine {
     String? quote;
     void flush() {
       if (buf.isEmpty) return;
-      final t = buf.toString();
-      tokens.add(descendNext && !t.startsWith('[') ? '..$t' : t);
+      final raw = buf.toString();
+      var t = raw;
+      if (descendNext) {
+        if (!raw.startsWith('[')) {
+          t = '..$raw';
+        } else {
+          // $..['key'] 括号式递归下降：归一为 ..key；$..[数字] 罕见，保留普通下标
+          final inner = raw.substring(1, raw.length - 1).trim();
+          if (inner.length >= 2 &&
+              (inner[0] == "'" || inner[0] == '"') &&
+              inner.endsWith(inner[0])) {
+            t = '..${inner.substring(1, inner.length - 1)}';
+          }
+        }
+      }
+      tokens.add(t);
       buf = StringBuffer();
       descendNext = false;
     }

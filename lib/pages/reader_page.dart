@@ -15,7 +15,18 @@ class ReaderPage extends StatefulWidget {
   final List<Chapter>? chapters;
   final int? startIndex;
 
-  const ReaderPage({super.key, required this.book, required this.source, this.chapters, this.startIndex});
+  /// true=续读（按书架记录的章节标题/章内进度恢复）；
+  /// false=从目录显式点选某章，必须停在所点章节的顶部，不能被"上次阅读位置"改写。
+  final bool resumeFromSaved;
+
+  const ReaderPage({
+    super.key,
+    required this.book,
+    required this.source,
+    this.chapters,
+    this.startIndex,
+    this.resumeFromSaved = true,
+  });
 
   @override
   State<ReaderPage> createState() => _ReaderPageState();
@@ -105,7 +116,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     _currentChapter = _progressChapter;
     _restoreChapter = _progressChapter;
     final rp = widget.book['durChapterProgress'];
-    if (rp is num && rp > 0) {
+    if (widget.resumeFromSaved && rp is num && rp > 0) {
       _restoreRatio = rp.toDouble().clamp(0.0, 1.0);
       _lastChapterRatio = _restoreRatio!;
     }
@@ -122,6 +133,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   /// 目录可能已更新（作者加章等），只按 index 恢复会错位；
   /// 记录的章标题对不上时向附近 ±50 章找同名章节
   void _alignToSavedTitle() {
+    // 从目录显式点选章节时不套用书架"上次阅读"标题对齐，否则会把用户点的章节改回上次阅读处
+    if (!widget.resumeFromSaved) return;
     final saved = (widget.book['durChapterTitle'] ?? '').toString();
     if (saved.isEmpty || _chapters.isEmpty) return;
     final cur = _progressChapter.clamp(0, _chapters.length - 1);

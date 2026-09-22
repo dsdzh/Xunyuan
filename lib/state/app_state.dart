@@ -153,6 +153,8 @@ class ShelfState extends ChangeNotifier {
       'durChapterTitle': existing?['durChapterTitle'] ?? '',
       'durChapterProgress': existing?['durChapterProgress'] ?? 0.0,
       'readProgress': existing?['readProgress'] ?? 0.0,
+      // 书架"第 x/y 章"进度依赖 tocCount，重建条目时必须一并保留，否则重新加架会抹掉总章数
+      if (existing?['tocCount'] != null) 'tocCount': existing!['tocCount'],
       'durChapterTime': DateTime.now().millisecondsSinceEpoch,
       'lastAddTime': existing?['lastAddTime'] ?? DateTime.now().millisecondsSinceEpoch,
     };

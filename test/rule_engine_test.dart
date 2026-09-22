@@ -79,4 +79,10 @@ void main() {
     expect(ContentAnalyzer.isJsonContent('{"a":1}'), true);
     expect(ContentAnalyzer.isJsonContent('[1,2]'), true);
   });
+
+  test(r'JSONPath $..["key"] 括号式递归下降', () {
+    const json = '{"data":{"chapters":[{"title":"第一章"},{"sub":{"title":"第二章"}}]}}';
+    final t = RuleEngine.getStringList(json, r'''$..['title']''', isJson: true);
+    expect(t, containsAll(<String>['第一章', '第二章']));
+  });
 }
