@@ -98,8 +98,10 @@ class _BookshelfPageState extends State<BookshelfPage> {
   Widget build(BuildContext context) {
     final shelf = context.watch<ShelfState>();
     if (_dismissed.isNotEmpty) {
+      // 只清理已经真正离开 shelf.books 的键；仍在库里（异步 remove 未落库）的键必须继续压住，
+      // 否则本帧就把刚滑掉的条目重新纳入列表，触发"已 Dismissible 的项被重建"断言并闪回
       final live = shelf.books.map((b) => '${b['key']}').toSet();
-      _dismissed.removeWhere(live.contains);
+      _dismissed.removeWhere((k) => !live.contains(k));
       _selected.removeWhere((k) => !live.contains(k));
     }
     final books =

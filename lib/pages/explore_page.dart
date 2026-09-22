@@ -76,6 +76,7 @@ class _ExplorePageState extends State<ExplorePage> {
         _page = page;
         _books = more ? [..._books, ...fresh] : fresh;
         if (fresh.isEmpty) _finished = true;
+        _moreError = null; // 分页成功后清掉上一次的页脚错误，否则失败提示常驻且滚动自动续载被永久挡住
         _loading = false;
       });
     } catch (e) {

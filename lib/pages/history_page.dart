@@ -21,8 +21,10 @@ class _HistoryPageState extends State<HistoryPage> {
     final shelf = context.watch<ShelfState>();
     final services = context.read<AppServices>();
     if (_dismissed.isNotEmpty) {
+      // 仅清理已真正离开 history 的键；仍在库里（removeHistory 异步未落库）的键须继续压住，
+      // 防止刚滑掉的记录本帧被重建触发 Dismissible 断言/闪回
       final live = shelf.history.map((b) => '${b['key']}').toSet();
-      _dismissed.removeWhere(live.contains);
+      _dismissed.removeWhere((k) => !live.contains(k));
     }
     final history =
         shelf.history.where((b) => !_dismissed.contains('${b['key']}')).toList();

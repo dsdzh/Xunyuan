@@ -154,7 +154,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final ch = _progressChapter.clamp(0, _chapters.length - 1);
     final title = _chapters[ch].title;
     if (title.isEmpty) return;
-    unawaited(_shelf.recordRead(widget.book, ch, title, _scrollMode ? _lastChapterRatio : _progress));
+    unawaited(_shelf.recordRead(widget.book, ch, title, _scrollMode ? _lastChapterRatio : _progress,
+        tocCount: _chapters.length));
   }
 
   @override
