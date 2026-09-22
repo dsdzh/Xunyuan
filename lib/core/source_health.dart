@@ -46,16 +46,24 @@ class SourceHealth {
 
 class SourceHealthChecker {
   static const keywords = ['我的', '天尊', '都市'];
-  static const _timeout = Duration(seconds: 20);
+  // 探测链含 search+详情+目录+正文多次请求，单请求 receiveTimeout 就有 20s，
+  // 整体预算必须显著大于单请求，否则慢站会被误判为不可用
+  static const _timeout = Duration(seconds: 40);
 
   Future<SourceHealth> check(BookSource source) async {
     final start = DateTime.now();
+    SourceHealth? reached; // 探测过程中已确认到的最高阶段
     try {
-      final health = await _probe(source).timeout(_timeout);
+      final health = await _probe(source, (h) => reached = h).timeout(_timeout);
       // 探测内部各阶段各自计时，统一回填总耗时
       return SourceHealth(health.level, _ms(start), health.message, start.millisecondsSinceEpoch);
     } on TimeoutException {
-      return _dead(start, '检测超时（20秒）');
+      // 慢但已确认到某阶段：按已确认结果记分，不误判为整体不可用
+      final r = reached;
+      if (r != null) {
+        return SourceHealth(r.level, _ms(start), '${r.message}（后续检测超时）', start.millisecondsSinceEpoch);
+      }
+      return _dead(start, '检测超时（${_timeout.inSeconds}秒）');
     } on DioException catch (e) {
       return _dead(start, _describeDio(e));
     } catch (e) {
@@ -69,7 +77,7 @@ class SourceHealthChecker {
   int _ms(DateTime start) =>
       DateTime.now().difference(start).inMilliseconds;
 
-  Future<SourceHealth> _probe(BookSource source) async {
+  Future<SourceHealth> _probe(BookSource source, void Function(SourceHealth) mark) async {
     final start = DateTime.now();
     if ((source.searchUrl ?? '').trim().isEmpty) {
       return SourceHealth(HealthLevel.dead, 0, '书源没有搜索规则', start.millisecondsSinceEpoch);
@@ -88,6 +96,7 @@ class SourceHealthChecker {
     final b = books.first;
     final searchOnly = SourceHealth(HealthLevel.searchOnly, _ms(start), '搜索命中《${b.name}》',
         start.millisecondsSinceEpoch);
+    mark(searchOnly); // 搜索已通，后续详情/目录/正文再慢再挂也不应回落到"不可用"
 
     final BookDetail detail;
     try {

@@ -46,6 +46,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   int _currentChapter = 0;
   int _readPage = 0;
   int _pagesTotal = 1;
+  // 向后翻章时页数尚未知，置位后在 LayoutBuilder 拿到 pages 时落到最后一页
+  bool _pendingLastPage = false;
+  // 翻页模式跳章代数：仅最新一次加载可落地，防目录连点旧请求覆盖新章
+  int _pagedEpoch = 0;
 
   bool _menuVisible = true;
   late bool _scrollMode = context.read<ReaderSettings>().scrollMode;
@@ -85,6 +89,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
           _turnFrom = null;
           _dragTurnActive = false;
         });
+        // 复位到 0，否则下次 animateTo(1) 命中 target==value 走零时长分支、
+        // 既不播动画也不回调 listener，_turnFrom 会永久残留、翻页动画只生效一次
+        _turnCtrl.value = 0;
       } else if (_turnCtrl.status == AnimationStatus.dismissed && _dragTurnActive) {
         // 拖到一半松手回弹：退回原页
         setState(() {
@@ -248,6 +255,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   Future<void> _loadAround(int chapterIdx) async {
     final epoch = ++_loadEpoch;
     _reloading = true;
+    // 全量重载期间独占内容变更，阻止 _appendNextIfNeed/_prependChapter 交错污染新列表
+    _loadingContent = true;
     _paragraphs.clear();
     _paragraphChapter.clear();
     _chapterStart.clear();
@@ -256,8 +265,12 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     for (var i = chapterIdx; i < math.min(chapterIdx + 2, _chapters.length); i++) {
       await _appendChapter(i);
       // 期间又发起了新的重载：本协程立即作废，避免交错追加
-      if (!mounted || epoch != _loadEpoch) return;
+      if (!mounted || epoch != _loadEpoch) {
+        _loadingContent = false;
+        return;
+      }
     }
+    _loadingContent = false;
     _reloading = false;
     if (!mounted) return;
     setState(() {});
@@ -280,14 +293,17 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   Future<void> _appendChapter(int idx) async {
     if (_chapterStart.containsKey(idx) || idx >= _chapters.length) return;
-    _chapterStart[idx] = _paragraphs.length;
+    final epoch = _loadEpoch;
     List<String> paras;
     try {
       paras = _splitParagraphs(await _chapterContent(idx));
     } catch (e) {
       paras = ['【本章加载失败：$e】'];
     }
-    if (!mounted) return;
+    // 其间发生过 _loadAround 全量重载：本次属旧代，丢弃以免把段落塞进已重建的新列表
+    if (!mounted || epoch != _loadEpoch) return;
+    if (_chapterStart.containsKey(idx)) return;
+    _chapterStart[idx] = _paragraphs.length;
     _paragraphChapter.addAll(List.filled(paras.length, idx));
     _paragraphs.addAll(paras);
     _lastLoadedChapter = math.max(_lastLoadedChapter, idx);
@@ -297,6 +313,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     if (_loadingContent || _firstLoadedChapter <= 0) return;
     _loadingContent = true;
     final idx = _firstLoadedChapter - 1;
+    final epoch = _loadEpoch;
     List<String> paras;
     try {
       paras = _splitParagraphs(await _chapterContent(idx));
@@ -304,9 +321,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       paras = ['【本章加载失败：$e】'];
     }
     if (!mounted) {
-      _loadingContent = false;
+      if (epoch == _loadEpoch) _loadingContent = false;
       return;
     }
+    // 已被 _loadAround 接管（代数变了）：_loadingContent 归它负责，本次前插作废
+    if (epoch != _loadEpoch) return;
     final before = _scrollController.hasClients ? _scrollController.position.pixels : 0.0;
     _paragraphs.insertAll(0, paras);
     _paragraphChapter.insertAll(0, List.filled(paras.length, idx));
@@ -373,6 +392,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   Future<void> _loadChapterForPaged(int idx) async {
     if (idx < 0 || idx >= _chapters.length) return;
+    final epoch = ++_pagedEpoch;
     _stopTurnAnim();
     List<String> paras;
     try {
@@ -380,11 +400,16 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     } catch (e) {
       paras = ['【本章加载失败：$e】'];
     }
-    if (!mounted) return;
+    // 期间又发起了新的跳章/加载：本次作废，避免旧章正文盖住新章、进度与内容错位
+    if (!mounted || epoch != _pagedEpoch) return;
     setState(() {
       _currentChapter = idx;
+      _progressChapter = idx;
       _chapterParagraphs = paras;
       _readPage = 0;
+      // 跳章没有翻页动画、不会逐帧重建，底部进度条 build 时读到的仍是旧章 _progress，
+      // 这里同步一次：向后翻章由 _pendingLastPage 落到末页，其余从首页开始
+      _progress = _pendingLastPage ? 1.0 : 0.0;
       _turnFrom = null;
     });
   }
@@ -392,13 +417,16 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   // ---------- 跳转 ----------
 
   void _jumpToChapter(int i) {
-    setState(() {
-      _currentChapter = i;
-      _progressChapter = i;
-    });
+    _pendingLastPage = false;
     if (_scrollMode) {
+      setState(() {
+        _currentChapter = i;
+        _progressChapter = i;
+      });
       unawaited(_loadAround(i));
     } else {
+      // 翻页模式不预设 _currentChapter：否则等待期间旧正文会顶着新章标题渲染，
+      // 由 _loadChapterForPaged 落地时统一更新（带 epoch 保护）
       unawaited(_loadChapterForPaged(i));
     }
   }
@@ -527,6 +555,13 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               key: ValueKey('${settings.fontSize}|${settings.lineHeight}'),
               builder: (context, constraints) {
                 final pages = _paginate(chapterParagraphs: _chapterParagraphs, constraints: constraints, settings: settings);
+                if (_pendingLastPage) {
+                  _readPage = pages.isEmpty ? 0 : pages.length - 1;
+                  _pendingLastPage = false;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) setState(() {});
+                  });
+                }
                 if (_restoreRatio != null && _currentChapter == _restoreChapter) {
                   _readPage = (_restoreRatio! * (pages.length - 1)).round().clamp(0, pages.length - 1);
                   _restoreRatio = null;
@@ -727,11 +762,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final target = _readPage + dir;
     if (target < 0) {
       if (_currentChapter > 0) {
-        _stopTurnAnim();
-        unawaited(_loadChapterForPaged(_currentChapter - 1).then((_) {
-          // 上一章：跳到最后一页近似处理
-          if (mounted) setState(() {});
-        }));
+        // 上一章：落到最后一页，可逐页往回看（页数在 LayoutBuilder 拿到分页后才知）
+        _pendingLastPage = true;
+        unawaited(_loadChapterForPaged(_currentChapter - 1));
       }
       return;
     }
@@ -800,16 +833,54 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       return h;
     }
 
-    for (final p in chapterParagraphs) {
-      final ph = paraHeight(p);
+    // 单段高度超过一页时按页高切片，否则固定高度页会裁掉尾部（整章只有一段的书源常见）
+    // chunkMax 预留首页章标题空间，保证每片落在任何一页都不溢出
+    final chunkMax = math.max(pageHeight - settings.fontSize * 2.5, settings.fontSize * 2);
+    List<String> splitOversized(String p) {
+      final out = <String>[];
+      var remaining = p;
+      var guard = 0;
+      while (remaining.isNotEmpty && guard++ < 5000) {
+        final tp = TextPainter(text: TextSpan(text: remaining, style: style), maxLines: null, textDirection: TextDirection.ltr)
+          ..layout(maxWidth: pageWidth);
+        if (tp.height <= chunkMax) {
+          tp.dispose();
+          out.add(remaining);
+          break;
+        }
+        var cut = tp.getPositionForOffset(Offset(0, chunkMax)).offset;
+        tp.dispose();
+        if (cut <= 0) cut = 1; // 至少推进 1 字符，防超大字号/单行超页死循环
+        if (cut >= remaining.length) {
+          out.add(remaining);
+          break;
+        }
+        out.add(remaining.substring(0, cut));
+        remaining = remaining.substring(cut);
+      }
+      return out;
+    }
+
+    void pack(String text, double ph) {
       final withSep = ph + (current.isEmpty ? 0 : sepH);
       if (currentHeight + withSep > pageHeight && current.isNotEmpty) {
         pages.add(current.join('\n\n'));
-        current = [p];
+        current = [text];
         currentHeight = ph;
       } else {
-        current.add(p);
+        current.add(text);
         currentHeight += withSep;
+      }
+    }
+
+    for (final p in chapterParagraphs) {
+      final ph = paraHeight(p);
+      if (ph > pageHeight) {
+        for (final c in splitOversized(p)) {
+          pack(c, paraHeight(c));
+        }
+      } else {
+        pack(p, ph);
       }
     }
     if (current.isNotEmpty) pages.add(current.join('\n\n'));

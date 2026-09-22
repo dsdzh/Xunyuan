@@ -391,7 +391,9 @@ class BookSourceEngine {
     if (!s.contains('{{') || ctx is! Map) return s;
     return s.replaceAllMapped(RegExp(r'\{\{\$?\.?(\w+)\}\}'), (m) {
       final v = ctx[m.group(1)];
-      return v == null ? '' : '$v';
+      // Map/List 插值会变成 Dart 字面量（如 {a: 1}）拼出坏链，非标量一律留空
+      if (v == null || v is Map || v is List) return '';
+      return '$v';
     });
   }
 
@@ -462,7 +464,15 @@ class BookSourceEngine {
       while (nextUrl.trim().isNotEmpty && guard++ < 20) {
         final abs = _abs(pageUrl, nextUrl);
         if (abs == pageUrl) break;
-        final resp2 = await _check(HttpClient.instance.get(abs, headers: _headers));
+        final PageResponse resp2;
+        try {
+          resp2 = await _check(HttpClient.instance.get(abs, headers: _headers));
+        } catch (_) {
+          // 后续分页失败但已解析到章节：保留已有部分（与 content() 的降级一致），
+          // 仅首页也没拿到时才抛出
+          if (chapters.isNotEmpty) break;
+          rethrow;
+        }
         body = resp2.body;
         pageUrl = resp2.url;
         isJson = ContentAnalyzer.isJsonContent(body);
@@ -532,7 +542,8 @@ class BookSourceEngine {
       final title = _cleanText(names[i]);
       if (title.isEmpty) continue;
       final absUrl = _abs(pageUrl, urls[i]);
-      if (absUrl.isNotEmpty && !seen.add(absUrl)) continue;
+      if (absUrl.isEmpty) continue; // 无链接章节无法打开，跳过（与 chapterList 分支一致，避免堆积重复空链）
+      if (!seen.add(absUrl)) continue;
       out.add(Chapter(title, absUrl, startIndex + out.length));
     }
     return out;
@@ -563,7 +574,10 @@ class BookSourceEngine {
     final rc = source.ruleContent;
     var url = chapterUrl;
     final buffers = <String>[];
+    final visited = <String>{url};
     var guard = 0;
+    var totalLen = 0;
+    const maxLen = 2000000;
     while (url.isNotEmpty && guard++ < 20) {
       PageResponse resp;
       try {
@@ -580,14 +594,19 @@ class BookSourceEngine {
           ? [body]
           : RuleEngine.getStringList(body, rc.content, isJson: isJson);
       buffers.addAll(parts);
+      for (final s in parts) {
+        totalLen += s.length;
+      }
       if (rc.nextContentUrl.trim().isEmpty) break;
+      if (totalLen > maxLen) break; // 分页正文累计封顶
       var next = _cleanText(RuleEngine.getString(body, rc.nextContentUrl, isJson: isJson));
       if (next.isEmpty) break;
       final abs = _abs(pageUrl, next);
-      if (abs == url) break;
+      if (abs == url || !visited.add(abs)) break; // 环检测：A→B→A 这类非相邻重复也拦下
       url = abs;
     }
     var text = buffers.join('\n');
+    if (text.length > maxLen) text = text.substring(0, maxLen);
     if (rc.replaceRegex.trim().isNotEmpty) {
       text = _applyReplace(text, rc.replaceRegex);
     }
