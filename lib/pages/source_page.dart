@@ -37,16 +37,25 @@ class SourcePage extends StatelessWidget {
   }
 
   Future<void> _importFromFile(BuildContext context) async {
-    final files = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['json', 'txt'],
-    );
-    final file = files.isNotEmpty ? files.first : null;
-    if (file == null) return;
-    final text = utf8.decode(await file.readAsBytes(), allowMalformed: true);
-    if (text.isEmpty) {
+    final String text;
+    try {
+      final files = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json', 'txt'],
+      );
+      final file = files.isNotEmpty ? files.first : null;
+      if (file == null) return;
+      text = utf8.decode(await file.readAsBytes(), allowMalformed: true);
+    } catch (_) {
+      // content:// 解析失败、文件被移动等都会在这里抛
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('文件读取失败')));
+      }
+      return;
+    }
+    if (text.trim().isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('文件内容为空')));
       }
       return;
     }
@@ -72,13 +81,15 @@ class SourcePage extends StatelessWidget {
         ],
       ),
     );
+    controller.dispose();
     if (url == null || url.trim().isEmpty) return;
     if (!context.mounted) return;
     final state = context.read<SourceState>();
     try {
       final count = await state.importFromUrl(url);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('成功导入 $count 个书源')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(count > 0 ? '成功导入 $count 个书源' : '链接内容中未解析到有效书源（需为 Legado JSON 格式）')));
       }
     } catch (e) {
       if (context.mounted) {
@@ -323,10 +334,9 @@ class _SingleSourceSearch extends StatelessWidget {
                   textAlign: TextAlign.center, style: TextStyle(color: Colors.grey.shade700)),
               const SizedBox(height: 20),
               FilledButton.tonal(
-                onPressed: () {
-                  Navigator.pop(context);
-                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SearchPage()));
-                },
+                onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(
+                  builder: (_) => const SearchPage(),
+                )),
                 child: const Text('前往搜索页'),
               ),
             ],

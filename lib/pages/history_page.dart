@@ -5,20 +5,34 @@ import '../state/app_state.dart';
 import '../widgets/book_tile.dart';
 import 'reader_page.dart';
 
-class HistoryPage extends StatelessWidget {
+class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
+
+  @override
+  State<HistoryPage> createState() => _HistoryPageState();
+}
+
+class _HistoryPageState extends State<HistoryPage> {
+  // Dismissible 要求回调同步移出组件树，removeHistory 是异步的，先本地记账
+  final Set<String> _dismissed = {};
 
   @override
   Widget build(BuildContext context) {
     final shelf = context.watch<ShelfState>();
     final services = context.read<AppServices>();
+    if (_dismissed.isNotEmpty) {
+      final live = shelf.history.map((b) => '${b['key']}').toSet();
+      _dismissed.removeWhere(live.contains);
+    }
+    final history =
+        shelf.history.where((b) => !_dismissed.contains('${b['key']}')).toList();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('浏览记录'),
         centerTitle: true,
         actions: [
-          if (shelf.history.isNotEmpty)
+          if (history.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_sweep_outlined),
               tooltip: '清空记录',
@@ -40,7 +54,7 @@ class HistoryPage extends StatelessWidget {
             ),
         ],
       ),
-      body: shelf.history.isEmpty
+      body: history.isEmpty
           ? Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -52,10 +66,10 @@ class HistoryPage extends StatelessWidget {
               ),
             )
           : ListView.separated(
-              itemCount: shelf.history.length,
+              itemCount: history.length,
               separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, i) {
-                final book = shelf.history[i];
+                final book = history[i];
                 final key = book['key'].toString();
                 final source = services.findSource(book['sourceUrl']?.toString() ?? '');
                 return Dismissible(
@@ -67,7 +81,10 @@ class HistoryPage extends StatelessWidget {
                     padding: const EdgeInsets.only(right: 24),
                     child: const Icon(Icons.delete, color: Colors.white),
                   ),
-                  onDismissed: (_) => shelf.removeHistory(key),
+                  onDismissed: (_) {
+                    setState(() => _dismissed.add(key));
+                    shelf.removeHistory(key);
+                  },
                   child: BookTile(
                     name: (book['name'] ?? '').toString(),
                     author: (book['author'] ?? '').toString(),

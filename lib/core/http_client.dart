@@ -31,9 +31,22 @@ class CookieJar {
     final host = Uri.tryParse(url)?.host ?? '';
     final m = _cookies.putIfAbsent(host, () => {});
     for (final sc in setCookies) {
-      final pair = sc.split(';').first;
+      final parts = sc.split(';');
+      final pair = parts.first;
       final eq = pair.indexOf('=');
-      if (eq > 0) m[pair.substring(0, eq).trim()] = pair.substring(eq + 1).trim();
+      if (eq <= 0) continue;
+      final name = pair.substring(0, eq).trim();
+      final value = pair.substring(eq + 1).trim();
+      // Max-Age<=0 / Epoch 附近的 Expires 是"删除此 Cookie"指令，
+      // 若当作空值存储会被永久重放
+      final attrs = parts.skip(1).join(';').toLowerCase();
+      final maxAge = int.tryParse(RegExp(r'max-age\s*=\s*(-?\d+)').firstMatch(attrs)?.group(1) ?? '');
+      final expired = (maxAge != null && maxAge <= 0) || RegExp(r'expires\s*=\s*[^;]*\b1970\b').hasMatch(attrs);
+      if (expired) {
+        m.remove(name);
+      } else {
+        m[name] = value;
+      }
     }
   }
 
@@ -85,6 +98,11 @@ class HttpClient {
   /// 仅在内存中生效，进程重启后重新钉证。
   final Map<String, _TofuPins> _tofuPins = {};
 
+  /// 钉证过期重钉窗口：CDN 站点可能在一日内多次轮换叶子证书，
+  /// 永久拒新证会让书源直到进程重启前都不可用；
+  /// 超过窗口允许一次基于失败握手的重钉（重新 TOFU）。
+  static const _rePinAfter = Duration(hours: 8);
+
   bool _trustOnFirstFail(io.X509Certificate cert, String host, int port) {
     final fp = crypto.sha256.convert(cert.der).toString();
     final now = DateTime.now();
@@ -95,6 +113,10 @@ class HttpClient {
       return true;
     }
     if (pins.fingerprints.contains(fp)) return true;
+    if (now.difference(pins.firstSeen) > _rePinAfter) {
+      _tofuPins[host] = _TofuPins({fp}, now); // 过期重钉：整组指纹换新，重新开窗口
+      return true;
+    }
     if (now.difference(pins.firstSeen).inSeconds <= 10 && pins.fingerprints.length <= 8) {
       pins.fingerprints.add(fp);
       return true;
@@ -109,12 +131,17 @@ class HttpClient {
         err.contains('CERTIFICATE_VERIFY_FAILED');
   }
 
+  /// 证书破链主机（已有 TOFU 钉证记录）直接走宽松通道，
+  /// 避免每个请求都先严格失败再重发（双重 TLS 握手、POST 重放）。
+  /// 握手期失败意味着请求从未送达服务端，降级重放是安全的。
   Future<Response<List<int>>> _execute(
-      Future<Response<List<int>>> Function(Dio dio) send) async {
+      String url, Future<Response<List<int>>> Function(Dio dio) send) async {
+    final host = Uri.tryParse(url)?.host ?? '';
+    final pinned = _tofuPins.containsKey(host);
     try {
-      return await send(_dio);
+      return await send(pinned ? _lenientDio : _dio);
     } on DioException catch (e) {
-      if (_isCertFailure(e)) return await send(_lenientDio);
+      if (_isCertFailure(e) && !pinned) return await send(_lenientDio);
       rethrow;
     }
   }
@@ -128,7 +155,7 @@ class HttpClient {
       ...?headers,
     }..removeWhere((k, v) => v.isEmpty));
     try {
-      final resp = await _execute((d) => d.get(url, options: options));
+      final resp = await _execute(url, (d) => d.get(url, options: options));
       cookies.storeFrom(resp.realUri.toString(), resp.headers['set-cookie']);
       return PageResponse(
         decode(resp.data as List<int>, contentType: resp.headers.value(Headers.contentTypeHeader), hint: charsetHint),
@@ -138,7 +165,9 @@ class HttpClient {
     } on DioException catch (e) {
       final r = e.response;
       if (r != null && r.data is List<int>) {
-        return PageResponse(decode(r.data as List<int>, contentType: r.headers.value(Headers.contentTypeHeader), hint: charsetHint), r.statusCode ?? 0, url);
+        // 4xx/5xx 页面同样要按最终 URL 记 Cookie、解相对链接基准
+        cookies.storeFrom(r.realUri.toString(), r.headers['set-cookie']);
+        return PageResponse(decode(r.data as List<int>, contentType: r.headers.value(Headers.contentTypeHeader), hint: charsetHint), r.statusCode ?? 0, r.realUri.toString());
       }
       rethrow;
     }
@@ -152,7 +181,7 @@ class HttpClient {
       'Content-Type': contentType,
       ...?headers,
     }..removeWhere((k, v) => v.isEmpty));
-    final resp = await _execute((d) => d.post(url, data: body, options: options));
+    final resp = await _execute(url, (d) => d.post(url, data: body, options: options));
     cookies.storeFrom(resp.realUri.toString(), resp.headers['set-cookie']);
     final data = resp.data;
     return PageResponse(
@@ -165,7 +194,8 @@ class HttpClient {
 
   /// 字节 → 字符串：Content-Type / meta charset / BOM / UTF-8 失败回退 GBK
   static String decode(List<int> bytes, {String? contentType, String? hint}) {
-    String? charset = hint?.toLowerCase();
+    // 规则提取失败时常传入空串占位，此时必须回退 Content-Type/meta 嗅探
+    String? charset = (hint == null || hint.trim().isEmpty) ? null : hint.trim().toLowerCase();
     if (charset == null) {
       final ct = contentType?.toLowerCase() ?? '';
       final m = RegExp(r'charset\s*=\s*"?([\w-]+)"?').firstMatch(ct);

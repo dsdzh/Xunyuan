@@ -19,11 +19,15 @@ class _BookshelfPageState extends State<BookshelfPage> {
   bool _selecting = false;
   bool _grid = false;
   final Set<String> _selected = {};
+  // Dismissible 要求回调同步移出组件树；shelf.remove 是异步的，
+  // 先本地记账过滤，落库完成后自然与书架列表收敛
+  final Set<String> _dismissed = {};
 
   @override
   void initState() {
     super.initState();
-    _grid = StorageService.instance.setting('shelfGrid', def: false) as bool;
+    final g = StorageService.instance.setting('shelfGrid');
+    _grid = g is bool ? g : false;
   }
 
   void _toggleGrid() {
@@ -93,6 +97,13 @@ class _BookshelfPageState extends State<BookshelfPage> {
   @override
   Widget build(BuildContext context) {
     final shelf = context.watch<ShelfState>();
+    if (_dismissed.isNotEmpty) {
+      final live = shelf.books.map((b) => '${b['key']}').toSet();
+      _dismissed.removeWhere(live.contains);
+      _selected.removeWhere((k) => !live.contains(k));
+    }
+    final books =
+        shelf.books.where((b) => !_dismissed.contains('${b['key']}')).toList();
 
     return Scaffold(
       appBar: _selecting
@@ -103,13 +114,13 @@ class _BookshelfPageState extends State<BookshelfPage> {
               actions: [
                 TextButton(
                   onPressed: () => setState(() {
-                    if (_selected.length == shelf.books.length) {
+                    if (_selected.length == books.length) {
                       _selected.clear();
                     } else {
-                      _selected.addAll(shelf.books.map((b) => b['key'].toString()));
+                      _selected.addAll(books.map((b) => b['key'].toString()));
                     }
                   }),
-                  child: Text(_selected.length == shelf.books.length ? '取消全选' : '全选'),
+                  child: Text(_selected.length == books.length ? '取消全选' : '全选'),
                 ),
                 IconButton(
                   icon: Icon(Icons.delete, color: _selected.isEmpty ? Colors.grey : Colors.red),
@@ -135,11 +146,11 @@ class _BookshelfPageState extends State<BookshelfPage> {
                 IconButton(
                   icon: const Icon(Icons.checklist),
                   tooltip: '批量删除',
-                  onPressed: shelf.books.isEmpty ? null : _enterSelect,
+                  onPressed: books.isEmpty ? null : _enterSelect,
                 ),
               ],
             ),
-      body: shelf.books.isEmpty
+      body: books.isEmpty
           ? Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -156,17 +167,17 @@ class _BookshelfPageState extends State<BookshelfPage> {
               ),
             )
           : _grid
-              ? _buildGrid(shelf)
-              : _buildList(shelf),
+              ? _buildGrid(books)
+              : _buildList(shelf, books),
     );
   }
 
-  Widget _buildList(ShelfState shelf) {
+  Widget _buildList(ShelfState shelf, List<Map<String, dynamic>> books) {
     return ListView.separated(
-      itemCount: shelf.books.length,
+      itemCount: books.length,
       separatorBuilder: (_, _) => const Divider(height: 1),
       itemBuilder: (context, i) {
-        final book = shelf.books[i];
+        final book = books[i];
         final key = book['key'].toString();
         final tile = BookTile(
           name: (book['name'] ?? '').toString(),
@@ -197,14 +208,17 @@ class _BookshelfPageState extends State<BookshelfPage> {
             child: const Icon(Icons.delete, color: Colors.white),
           ),
           confirmDismiss: (_) => _confirmRemove(context, shelf, book),
-          onDismissed: (_) => shelf.remove(key),
+          onDismissed: (_) {
+            setState(() => _dismissed.add(key));
+            shelf.remove(key);
+          },
           child: tile,
         );
       },
     );
   }
 
-  Widget _buildGrid(ShelfState shelf) {
+  Widget _buildGrid(List<Map<String, dynamic>> books) {
     return LayoutBuilder(
       builder: (context, constraints) {
         const columns = 3;
@@ -219,9 +233,9 @@ class _BookshelfPageState extends State<BookshelfPage> {
             crossAxisSpacing: spacing,
             childAspectRatio: tileWidth / (coverHeight + 62),
           ),
-          itemCount: shelf.books.length,
+          itemCount: books.length,
           itemBuilder: (context, i) {
-            final book = shelf.books[i];
+            final book = books[i];
             final key = book['key'].toString();
             final selected = _selected.contains(key);
             return InkWell(

@@ -15,6 +15,15 @@ class StorageService {
   late Box<String> _cache; // key: 章节键, value: 正文
   late Box<dynamic> _settings;
 
+  /// 读-改-写操作（历史列表整存整取、书源 enabled 回写）必须串行，
+  /// 否则两次 await 交叠会让后写覆盖先写，丢失更新
+  Future<void> _rmwChain = Future<void>.value();
+  Future<T> _serialized<T>(Future<T> Function() body) {
+    final next = _rmwChain.then((_) => body());
+    _rmwChain = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
   Future<void> init() async {
     await Hive.initFlutter();
     _sources = await Hive.openBox<String>('sources');
@@ -45,38 +54,40 @@ class StorageService {
     await _sources.put(source.bookSourceUrl, jsonEncode(j));
   }
 
-  Future<int> importSources(List<BookSource> incoming) async {
-    var count = 0;
-    for (final s in incoming) {
-      final j = Map<String, dynamic>.from(s.raw);
-      // 更新导入不带 enabled 时沿用旧值，避免用户逐条关闭的源被整批重置
-      if (!j.containsKey('enabled')) {
-        final old = _sources.get(s.bookSourceUrl);
-        if (old != null) {
-          try {
-            final oj = jsonDecode(old);
-            if (oj is Map && oj.containsKey('enabled')) j['enabled'] = oj['enabled'];
-          } catch (_) {}
+  Future<int> importSources(List<BookSource> incoming) => _serialized(() async {
+        var count = 0;
+        for (final s in incoming) {
+          final j = Map<String, dynamic>.from(s.raw);
+          // 更新导入不带 enabled 时沿用旧值，避免用户逐条关闭的源被整批重置
+          if (!j.containsKey('enabled')) {
+            final old = _sources.get(s.bookSourceUrl);
+            if (old != null) {
+              try {
+                final oj = jsonDecode(old);
+                if (oj is Map && oj.containsKey('enabled')) j['enabled'] = oj['enabled'];
+              } catch (_) {}
+            }
+          }
+          await _sources.put(s.bookSourceUrl, jsonEncode(j));
+          count++;
         }
-      }
-      await _sources.put(s.bookSourceUrl, jsonEncode(j));
-      count++;
-    }
-    return count;
-  }
+        return count;
+      });
 
   Future<void> removeSource(String url) => _sources.delete(url);
 
   Future<void> clearSources() => _sources.clear();
 
-  Future<void> setSourceEnabled(String url, bool enabled) async {
-    final raw = _sources.get(url);
-    if (raw == null) return;
-    final decoded = jsonDecode(raw);
-    if (decoded is! Map<String, dynamic>) return; // 缓存条目损坏时静默跳过，调用方不 catch
-    decoded['enabled'] = enabled;
-    await _sources.put(url, jsonEncode(decoded));
-  }
+  bool sourceExists(String url) => _sources.containsKey(url);
+
+  Future<void> setSourceEnabled(String url, bool enabled) => _serialized(() async {
+        final raw = _sources.get(url);
+        if (raw == null) return;
+        final decoded = jsonDecode(raw);
+        if (decoded is! Map<String, dynamic>) return; // 缓存条目损坏时静默跳过，调用方不 catch
+        decoded['enabled'] = enabled;
+        await _sources.put(url, jsonEncode(decoded));
+      });
 
   String exportAllSources() {
     final list = <dynamic>[];
@@ -149,19 +160,21 @@ class StorageService {
     return [];
   }
 
-  Future<void> putReadHistory(Map<String, dynamic> entry) async {
-    final list = readHistory..removeWhere((e) => e['key'] == entry['key']);
-    list.insert(0, entry);
-    if (list.length > 100) list.removeRange(100, list.length);
-    await _settings.put(_historyKey, jsonEncode(list));
-  }
+  Future<void> putReadHistory(Map<String, dynamic> entry) => _serialized(() async {
+        final list = readHistory..removeWhere((e) => e['key'] == entry['key']);
+        list.insert(0, entry);
+        if (list.length > 100) list.removeRange(100, list.length);
+        await _settings.put(_historyKey, jsonEncode(list));
+      });
 
-  Future<void> removeReadHistory(String key) async {
-    final list = readHistory..removeWhere((e) => e['key'] == key);
-    await _settings.put(_historyKey, jsonEncode(list));
-  }
+  Future<void> removeReadHistory(String key) => _serialized(() async {
+        final list = readHistory..removeWhere((e) => e['key'] == key);
+        await _settings.put(_historyKey, jsonEncode(list));
+      });
 
-  Future<void> clearReadHistory() => _settings.delete(_historyKey);
+  Future<void> clearReadHistory() => _serialized(() async {
+        await _settings.delete(_historyKey);
+      });
 
   // ---------- 章节缓存 ----------
   String? getCachedChapter(String chapterKey) => _cache.get(chapterKey);
@@ -199,4 +212,6 @@ class StorageService {
   dynamic setting(String key, {dynamic def}) => _settings.get(key) ?? def;
 
   Future<void> putSetting(String key, dynamic value) => _settings.put(key, value);
+
+  Future<void> removeSetting(String key) => _settings.delete(key);
 }

@@ -38,7 +38,9 @@ class _SearchPageState extends State<SearchPage> {
     super.initState();
     _syncSelected();
     if (widget.initialKeyword.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _doSearch(widget.initialKeyword));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _doSearch(widget.initialKeyword);
+      });
     }
   }
 
@@ -137,9 +139,8 @@ class _SearchPageState extends State<SearchPage> {
     });
 
     final gen = _searchGen;
-    for (final group in _results) {
-      unawaited(_searchOne(group, key, gen));
-    }
+    // 等全部书源返回再 resolve，下拉刷新指示器才能反映真实进度
+    await Future.wait(_results.map((group) => _searchOne(group, key, gen)));
   }
 
   Future<void> _searchOne(SourceGroupResult group, String key, int gen) async {

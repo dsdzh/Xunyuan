@@ -21,7 +21,10 @@ class _ExplorePageState extends State<ExplorePage> {
   List<SearchBook> _books = [];
   bool _loading = false;
   String? _error;
+  String? _moreError;
   int _page = 1;
+  int _loadGen = 0;
+  bool _finished = false;
 
   @override
   void initState() {
@@ -32,33 +35,58 @@ class _ExplorePageState extends State<ExplorePage> {
       _categories = BookSourceEngine.exploreCategories(withExplore.first);
       if (_categories.isNotEmpty) {
         _current = _categories.first;
-        WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _load();
+        });
       }
     }
+  }
+
+  void _resetList() {
+    _loadGen++;
+    _books = [];
+    _page = 1;
+    _finished = false;
+    _error = null;
+    _moreError = null;
   }
 
   Future<void> _load({bool more = false}) async {
     final source = _source;
     final cat = _current;
     if (source == null || cat == null) return;
-    setState(() {
-      _loading = true;
+    if (more && (_finished || _loading)) return;
+    if (!more) {
+      _loadGen++;
+      _page = 1;
+      _finished = false;
       _error = null;
-      if (!more) _books = [];
-    });
+      _moreError = null;
+    }
+    final gen = _loadGen;
+    setState(() => _loading = true);
     final page = more ? _page + 1 : 1;
     try {
       final books = await BookSourceEngine(source).explore(cat.url, page: page).timeout(const Duration(seconds: 25));
-      if (!mounted) return;
+      if (!mounted || gen != _loadGen) return; // 已切换分类/书源，丢弃过期结果
       setState(() {
+        // 无 {page} 规则的书源每页返回相同内容，按 bookUrl 去重防无限追加
+        final seen = _books.map((b) => b.bookUrl).toSet();
+        final fresh = books.where((b) => seen.add(b.bookUrl)).toList();
         _page = page;
-        _books = more ? [..._books, ...books] : books;
+        _books = more ? [..._books, ...fresh] : fresh;
+        if (fresh.isEmpty) _finished = true;
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _loadGen) return;
       setState(() {
-        _error = e.toString();
+        // 已有内容时错误只作页脚提示，不清空已加载列表
+        if (more || _books.isNotEmpty) {
+          _moreError = e.toString();
+        } else {
+          _error = e.toString();
+        }
         _loading = false;
       });
     }
@@ -91,7 +119,7 @@ class _ExplorePageState extends State<ExplorePage> {
         _source = picked;
         _categories = BookSourceEngine.exploreCategories(picked);
         _current = _categories.isNotEmpty ? _categories.first : null;
-        _books = [];
+        _resetList();
       });
       _load();
     }
@@ -136,7 +164,10 @@ class _ExplorePageState extends State<ExplorePage> {
                             label: Text(c.title),
                             selected: _current?.title == c.title,
                             onSelected: (_) {
-                              setState(() => _current = c);
+                              setState(() {
+                                _current = c;
+                                _resetList();
+                              });
                               _load();
                             },
                           ),
@@ -166,6 +197,8 @@ class _ExplorePageState extends State<ExplorePage> {
                                 if (n is ScrollEndNotification &&
                                     n.metrics.extentAfter < 600 &&
                                     !_loading &&
+                                    !_finished &&
+                                    _moreError == null &&
                                     _books.isNotEmpty) {
                                   _load(more: true);
                                 }
@@ -186,6 +219,20 @@ class _ExplorePageState extends State<ExplorePage> {
                                       onTap: () => Navigator.of(context).push(MaterialPageRoute(
                                         builder: (_) => DetailPage(result: b, source: source),
                                       )),
+                                    ),
+                                  if (_moreError != null)
+                                    ListTile(
+                                      title: Text('加载下一页失败：$_moreError',
+                                          style: TextStyle(fontSize: 12, color: Colors.red.shade400)),
+                                      trailing: TextButton(
+                                        onPressed: () => _load(more: true),
+                                        child: const Text('重试'),
+                                      ),
+                                    ),
+                                  if (_finished && _books.isNotEmpty && _moreError == null)
+                                    Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Center(child: Text('没有更多了', style: TextStyle(fontSize: 12, color: Colors.grey.shade500))),
                                     ),
                                   if (_loading)
                                     const Padding(

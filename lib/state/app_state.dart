@@ -65,8 +65,8 @@ class SourceState extends ChangeNotifier {
 
   /// 健康度检测：并发 3 路逐个探测，结果实时刷新并持久化。
   Future<void> checkHealth(List<BookSource> targets) async {
-    // 检测中仅允许单源重测（如详情弹窗里点"重新检测此书源"）
-    if (_healthJobs > 0 && targets.length != 1) return;
+    // 全局互斥：单源重测可无限叠挂会让并发失控（3N 路探测）
+    if (_healthJobs > 0) return;
     _healthJobs++;
     notifyListeners();
     try {
@@ -75,10 +75,16 @@ class SourceState extends ChangeNotifier {
       Future<void> worker() async {
         while (queue.isNotEmpty) {
           final s = queue.removeAt(0);
-          final h = await checker.check(s);
-          health[s.bookSourceUrl] = h;
-          await StorageService.instance.putSourceHealth(s.bookSourceUrl, h.toJson());
-          notifyListeners();
+          try {
+            final h = await checker.check(s);
+            // 检测期间源被删除则丢弃结果，防止已删源的健康度"复活"
+            if (!StorageService.instance.sourceExists(s.bookSourceUrl)) continue;
+            health[s.bookSourceUrl] = h;
+            await StorageService.instance.putSourceHealth(s.bookSourceUrl, h.toJson());
+            notifyListeners();
+          } catch (_) {
+            // 单源写盘失败不拖垮整个队列
+          }
         }
       }
 
@@ -142,8 +148,11 @@ class ShelfState extends ChangeNotifier {
       'tocUrl': d.tocUrl,
       'sourceUrl': d.sourceUrl,
       'sourceName': d.sourceName,
+        // 详情页刷新书架条目时保留已有阅读进度，防止章内进度/总进度被重置
       'durChapterIndex': existing?['durChapterIndex'] ?? 0,
       'durChapterTitle': existing?['durChapterTitle'] ?? '',
+      'durChapterProgress': existing?['durChapterProgress'] ?? 0.0,
+      'readProgress': existing?['readProgress'] ?? 0.0,
       'durChapterTime': DateTime.now().millisecondsSinceEpoch,
       'lastAddTime': existing?['lastAddTime'] ?? DateTime.now().millisecondsSinceEpoch,
     };
@@ -195,7 +204,9 @@ class ShelfState extends ChangeNotifier {
     entry['key'] = key;
     if (StorageService.instance.getBook(key) != null) {
       await updateProgress(key, chapterIndex, chapterTitle, chapterProgress, chapterProgress);
-      entry = StorageService.instance.getBook(key)!;
+      final refreshed = StorageService.instance.getBook(key);
+      // 期间可能被别处删除，取不到就沿用手上的 entry
+      if (refreshed != null) entry = refreshed;
     }
     entry['durChapterIndex'] = chapterIndex;
     entry['durChapterProgress'] = chapterProgress;
@@ -238,21 +249,28 @@ class ReaderSettings extends ChangeNotifier {
 
   bool get scrollMode => pageAnimIndex == 3;
 
+  static double _asDouble(dynamic v, double def) => v is num ? v.toDouble() : def;
+  static int _asInt(dynamic v, int def) => v is num ? v.toInt() : def;
+
   Future<void> load() async {
+    // 存储条目可能被旧版本或损坏数据写成的异常类型污染，全部宽容读取，
+    // 不能让设置加载抛异常打断 runApp 启动链
     final s = StorageService.instance;
-    fontSize = (s.setting('fontSize', def: 20) as num).toDouble();
-    lineHeight = (s.setting('lineHeight', def: 1.6) as num).toDouble();
-    themeIndex = s.setting('themeIndex', def: 0) as int;
-    var anim = s.setting('pageAnimIndex', def: 3) as int;
+    fontSize = _asDouble(s.setting('fontSize'), 20);
+    lineHeight = _asDouble(s.setting('lineHeight'), 1.6);
+    themeIndex = _asInt(s.setting('themeIndex'), 0);
+    var anim = _asInt(s.setting('pageAnimIndex'), 3);
     final legacyScroll = s.setting('scrollMode');
-    if (legacyScroll != null) {
+    if (legacyScroll is bool) {
       // 旧版只有 仿真/覆盖/平移 三档 + scrollMode 开关，一次性迁移
-      anim = (legacyScroll as bool) ? 3 : (s.setting('pageAnimIndex', def: 0) as int).clamp(0, 2);
+      anim = legacyScroll ? 3 : _asInt(s.setting('pageAnimIndex'), 0).clamp(0, 2);
       await s.putSetting('pageAnimIndex', anim);
+      // 迁移后必须删掉旧开关，否则每次启动都覆盖用户后来选的翻页模式
+      await s.removeSetting('scrollMode');
     }
     pageAnimIndex = anim;
-    brightness = (s.setting('brightness', def: 1.0) as num).toDouble();
-    eyeProtect = s.setting('eyeProtect', def: false) as bool;
+    brightness = _asDouble(s.setting('brightness'), 1.0);
+    eyeProtect = s.setting('eyeProtect') is bool ? s.setting('eyeProtect') as bool : false;
     notifyListeners();
   }
 
