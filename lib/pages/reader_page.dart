@@ -21,7 +21,7 @@ class ReaderPage extends StatefulWidget {
   State<ReaderPage> createState() => _ReaderPageState();
 }
 
-class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateMixin {
+class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final BookSourceEngine _engine = BookSourceEngine(widget.source);
   late final ShelfState _shelf;
 
@@ -36,6 +36,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   int _firstLoadedChapter = 0;
   int _lastLoadedChapter = -1;
   bool _loadingContent = false;
+  // _loadAround 全量重载防护：代数递增使旧的并发加载作废
+  int _loadEpoch = 0;
+  bool _reloading = false;
   final ScrollController _scrollController = ScrollController();
 
   // 翻页模式状态
@@ -67,6 +70,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _shelf = context.read<ShelfState>();
     _turnCtrl.addListener(() {
       if (_turnFrom == null) {
@@ -101,9 +105,29 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     if (widget.chapters != null && widget.chapters!.isNotEmpty) {
       _chapters = widget.chapters!;
       _loadingToc = false;
+      _alignToSavedTitle();
       WidgetsBinding.instance.addPostFrameCallback((_) => _prepare());
     } else {
       unawaited(_loadToc());
+    }
+  }
+
+  /// 目录可能已更新（作者加章等），只按 index 恢复会错位；
+  /// 记录的章标题对不上时向附近 ±50 章找同名章节
+  void _alignToSavedTitle() {
+    final saved = (widget.book['durChapterTitle'] ?? '').toString();
+    if (saved.isEmpty || _chapters.isEmpty) return;
+    final cur = _progressChapter.clamp(0, _chapters.length - 1);
+    if (_chapters[cur].title == saved) return;
+    for (var d = 1; d <= 50; d++) {
+      for (final i in [cur - d, cur + d]) {
+        if (i >= 0 && i < _chapters.length && _chapters[i].title == saved) {
+          _progressChapter = i;
+          _currentChapter = i;
+          _restoreChapter = i;
+          return;
+        }
+      }
     }
   }
 
@@ -111,16 +135,27 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
   @override
   void dispose() {
-    if (_chapters.isNotEmpty) {
-      final ch = _progressChapter.clamp(0, _chapters.length - 1);
-      final title = _chapters[ch].title;
-      if (title.isNotEmpty) {
-        unawaited(_shelf.recordRead(widget.book, ch, title, _scrollMode ? _lastChapterRatio : _progress));
-      }
-    }
+    WidgetsBinding.instance.removeObserver(this);
+    _saveProgress();
     _turnCtrl.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _saveProgress() {
+    if (_chapters.isEmpty) return;
+    final ch = _progressChapter.clamp(0, _chapters.length - 1);
+    final title = _chapters[ch].title;
+    if (title.isEmpty) return;
+    unawaited(_shelf.recordRead(widget.book, ch, title, _scrollMode ? _lastChapterRatio : _progress));
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 进程可能在后台被系统回收，退到后台即落盘进度而非只靠 dispose
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      _saveProgress();
+    }
   }
 
   /// 章内进度比例（0~1）
@@ -164,6 +199,7 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
         _chapters = chapters!;
         _loadingToc = false;
       });
+      _alignToSavedTitle();
       _prepare();
     } catch (e) {
       if (!mounted) return;
@@ -210,6 +246,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   // ---------- 滚动模式 ----------
 
   Future<void> _loadAround(int chapterIdx) async {
+    final epoch = ++_loadEpoch;
+    _reloading = true;
     _paragraphs.clear();
     _paragraphChapter.clear();
     _chapterStart.clear();
@@ -217,7 +255,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     _lastLoadedChapter = chapterIdx - 1;
     for (var i = chapterIdx; i < math.min(chapterIdx + 2, _chapters.length); i++) {
       await _appendChapter(i);
+      // 期间又发起了新的重载：本协程立即作废，避免交错追加
+      if (!mounted || epoch != _loadEpoch) return;
     }
+    _reloading = false;
     if (!mounted) return;
     setState(() {});
     if (_restoreRatio != null && chapterIdx == _restoreChapter) {
@@ -294,9 +335,12 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final pos = _scrollController.position;
     _progress = pos.maxScrollExtent <= 0 ? 0 : (pos.pixels / pos.maxScrollExtent).clamp(0.0, 1.0);
     if (n is ScrollUpdateNotification) {
-      final ch = _visibleChapter();
-      _progressChapter = ch;
-      _lastChapterRatio = _chapterProgressRatio(ch);
+      // 重载期间正文被清空，据其推算的章节是垃圾，不覆盖真实进度
+      if (!_reloading) {
+        final ch = _visibleChapter();
+        _progressChapter = ch;
+        _lastChapterRatio = _chapterProgressRatio(ch);
+      }
       if (n.metrics.extentAfter < 1500) {
         _appendNextIfNeed();
       }

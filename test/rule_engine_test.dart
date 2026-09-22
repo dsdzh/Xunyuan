@@ -65,4 +65,18 @@ void main() {
     // 合法范围仍是原语义
     expect(RuleEngine.getString(html, 'tag.li[0-1]@text'), '甲');
   });
+
+  test(r'JSONPath $..key 递归下降穿数组', () {
+    const json = '{"data":{"chapters":[{"title":"第一章"},{"sub":{"title":"第二章"}}]}}';
+    final t = RuleEngine.getStringList(json, r'$..title', isJson: true);
+    expect(t, containsAll(<String>['第一章', '第二章']));
+    // 末尾悬空点不能再 RangeError
+    expect(RuleEngine.getStringList(json, r'$.data.', isJson: true), isNotEmpty);
+  });
+
+  test('纯文本以 [ 开头不得误判为 JSON', () {
+    expect(ContentAnalyzer.isJsonContent('[第一卷] 从前有座山\n正文……'), false);
+    expect(ContentAnalyzer.isJsonContent('{"a":1}'), true);
+    expect(ContentAnalyzer.isJsonContent('[1,2]'), true);
+  });
 }

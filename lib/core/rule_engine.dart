@@ -24,6 +24,9 @@ class RuleResult {
 /// - 不支持的规则（`@js:`、`@xpath:`）返回空并记录警告
 class RuleEngine {
   static final List<String> warnings = <String>[];
+  static void _warn(String w) {
+    if (warnings.length < 200) warnings.add(w); // 上限防逐条×逐字段累积泄漏
+  }
 
   /// content: 原始内容（html 字符串 / json 字符串）
   /// rule: 规则字符串
@@ -46,7 +49,17 @@ class RuleEngine {
     return _analyze(content, rule, nodes: true, isJson: isJson);
   }
 
-  static h.Document _parseHtml(String content) => html_parser.parse(content);
+  static h.Document _parseHtml(String content) {
+    // _analyze 对 ;;/&& 递归时同一 content 会被反复解析，单条目缓存防大页卡顿
+    if (!identical(content, _lastHtmlSrc) && content != _lastHtmlSrc) {
+      _lastHtmlDoc = html_parser.parse(content);
+      _lastHtmlSrc = content;
+    }
+    return _lastHtmlDoc!;
+  }
+
+  static String? _lastHtmlSrc;
+  static h.Document? _lastHtmlDoc;
 
   static dynamic _tryJson(String content) {
     try {
@@ -123,16 +136,16 @@ class RuleEngine {
     } else if (core.startsWith('@css:')) {
       results = _cssSelectAll(_parseHtml(content), core.substring(5));
     } else if (core.startsWith('@xpath:')) {
-      warnings.add('暂不支持 XPath 规则: $core');
+      _warn('暂不支持 XPath 规则: $core');
       return [];
     } else if (core.startsWith('@js:') || core.contains('<js>')) {
-      warnings.add('暂不支持 JS 规则: ${core.length > 60 ? '${core.substring(0, 60)}…' : core}');
+      _warn('暂不支持 JS 规则: ${core.length > 60 ? '${core.substring(0, 60)}…' : core}');
       return [];
     } else if (isJson) {
       results = _jsonPath(_asJsonValue(content), core);
     } else if (core.startsWith('{{') && core.endsWith('}}')) {
       // 模板规则 —— v1 不支持复杂模板
-      warnings.add('暂不支持模板规则');
+      _warn('暂不支持模板规则');
       return [];
     } else {
       results = _cssChain(_parseHtml(content), core);
@@ -153,7 +166,7 @@ class RuleEngine {
     try {
       re = RegExp(regexPattern, dotAll: true);
     } catch (e) {
-      warnings.add('非法正则: $regexPattern');
+      _warn('非法正则: $regexPattern');
       return texts;
     }
     final out = <dynamic>[];
@@ -394,8 +407,8 @@ class RuleEngine {
     }
     final n = int.tryParse(expr);
     if (n != null) return (n >= 0 && n < list.length) ? [list[n]] : [];
-    if (RegExp(r'^\d+$').hasMatch(expr)) return []; // 超 64 位纯数字 = 必然越界
-    return list;
+    // 未识别的 [...]（过滤器/切片/函数等）不能整表放行，否则错源产出假书目
+    return [];
   }
 
   /// 顺序步骤选择：class./id./tag./text. 与裸标签名、数字下标逐步收窄。
@@ -541,18 +554,26 @@ class RuleEngine {
           } else if (item is Map) {
             next.addAll(item.values);
           }
-        } else if (t.startsWith('..')) {
-          final key = t.substring(2);
-          _descend(item, key, next);
         } else if (t.startsWith('[') && t.endsWith(']')) {
           final inner = t.substring(1, t.length - 1);
-          if (inner.startsWith("'") || inner.startsWith('"')) {
+          if (inner == '*') {
+            // [*] 对数组取元素、对对象取值（current0 包一层会错过 Map 分支）
+            if (item is List) {
+              next.addAll(item);
+            } else if (item is Map) {
+              next.addAll(item.values);
+            }
+          } else if (inner.length >= 2 &&
+              (inner[0] == "'" || inner[0] == '"') &&
+              inner.endsWith(inner[0])) {
             final key = inner.substring(1, inner.length - 1);
             if (item is Map && item.containsKey(key)) next.add(item[key]);
           } else {
             final filtered = _applyIndex(current0(item), inner);
             next.addAll(filtered);
           }
+        } else if (t.startsWith('..')) {
+          _descend(item, t.substring(2), next);
         } else {
           if (item is Map && item.containsKey(t)) {
             next.add(item[t]);
@@ -599,7 +620,16 @@ class RuleEngine {
     final tokens = <String>[];
     var buf = StringBuffer();
     var inBracket = 0;
+    var descendNext = false; // 刚消费 `..`，下一个 token 为递归下降
     String? quote;
+    void flush() {
+      if (buf.isEmpty) return;
+      final t = buf.toString();
+      tokens.add(descendNext && !t.startsWith('[') ? '..$t' : t);
+      buf = StringBuffer();
+      descendNext = false;
+    }
+
     for (var i = 0; i < path.length; i++) {
       final c = path[i];
       if (quote != null) {
@@ -613,10 +643,7 @@ class RuleEngine {
         continue;
       }
       if (c == '[') {
-        if (buf.isNotEmpty) {
-          tokens.add(buf.toString());
-          buf = StringBuffer();
-        }
+        flush();
         inBracket++;
         buf.write(c);
         continue;
@@ -624,36 +651,36 @@ class RuleEngine {
       if (c == ']') {
         inBracket--;
         buf.write(c);
-        if (inBracket == 0) {
-          tokens.add(buf.toString());
-          buf = StringBuffer();
-        }
+        if (inBracket == 0) flush();
         continue;
       }
       if (c == '.' && inBracket == 0) {
-        if (buf.isNotEmpty && path[i + 1] == '.') {
-          // .. 递归 —— 下一个 token 前缀为 ..
-          buf.write(c);
-          continue;
-        }
-        if (buf.isNotEmpty) {
-          tokens.add(buf.toString());
-          buf = StringBuffer();
+        flush();
+        if (i + 1 < path.length && path[i + 1] == '.') {
+          descendNext = true;
+          i++; // 消费第二个点
         }
         continue;
       }
       buf.write(c);
     }
-    if (buf.isNotEmpty) tokens.add(buf.toString());
+    flush();
     return tokens.where((t) => t.isNotEmpty).toList();
   }
 }
 
 /// 解析 `id.content@textNodes` 里 JSON 内容等场景的入口辅助。
 class ContentAnalyzer {
-  /// 判断响应内容是否 JSON
+  /// 判断响应内容是否 JSON：仅看首字符会把 `[第一卷]` 开头的纯文本章节误判
+  /// 成 JSON 导致正文为空，必须实际解码成功才算。
   static bool isJsonContent(String body) {
     final t = body.trimLeft();
-    return t.startsWith('{') || t.startsWith('[');
+    if (!t.startsWith('{') && !t.startsWith('[')) return false;
+    try {
+      jsonDecode(t);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 }

@@ -48,7 +48,18 @@ class StorageService {
   Future<int> importSources(List<BookSource> incoming) async {
     var count = 0;
     for (final s in incoming) {
-      await _sources.put(s.bookSourceUrl, jsonEncode(s.raw));
+      final j = Map<String, dynamic>.from(s.raw);
+      // 更新导入不带 enabled 时沿用旧值，避免用户逐条关闭的源被整批重置
+      if (!j.containsKey('enabled')) {
+        final old = _sources.get(s.bookSourceUrl);
+        if (old != null) {
+          try {
+            final oj = jsonDecode(old);
+            if (oj is Map && oj.containsKey('enabled')) j['enabled'] = oj['enabled'];
+          } catch (_) {}
+        }
+      }
+      await _sources.put(s.bookSourceUrl, jsonEncode(j));
       count++;
     }
     return count;
@@ -68,15 +79,19 @@ class StorageService {
   }
 
   String exportAllSources() {
-    final list = _sources.values.map((v) => jsonDecode(v)).toList();
+    final list = <dynamic>[];
+    for (final v in _sources.values) {
+      // 单条损坏不能拖垮整个导出
+      try {
+        list.add(jsonDecode(v));
+      } catch (_) {}
+    }
     return const JsonEncoder.withIndent('  ').convert(list);
   }
 
   // ---------- 书源健康度 ----------
-  static String _healthKey(String sourceUrl) {
-    final host = Uri.tryParse(sourceUrl)?.host;
-    return 'health::${host == null || host.isEmpty ? sourceUrl : host}';
-  }
+  // 按完整源 URL 记：同站常有多个书源，规则不同健康度互不相干
+  static String _healthKey(String sourceUrl) => 'health::$sourceUrl';
 
   Map<String, dynamic>? getSourceHealth(String sourceUrl) {
     final v = _settings.get(_healthKey(sourceUrl));

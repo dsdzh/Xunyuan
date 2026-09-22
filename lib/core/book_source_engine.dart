@@ -41,8 +41,8 @@ class Chapter {
 
   Map<String, dynamic> toJson() => {'title': title, 'url': url, 'index': index, 'isVip': isVip};
   factory Chapter.fromJson(Map m) =>
-      Chapter((m['title'] ?? '').toString(), (m['url'] ?? '').toString(), (m['index'] is num) ? m['index'] as int : 0,
-          isVip: m['isVip'] == true);
+      Chapter((m['title'] ?? '').toString(), (m['url'] ?? '').toString(),
+          (m['index'] as num?)?.toInt() ?? 0, isVip: m['isVip'] == true);
 }
 
 class BookDetail {
@@ -77,30 +77,28 @@ class BookSourceEngine {
         return out;
       }
     } catch (_) {}
-    return {};
+    // 极常见的裸文本形态：`User-Agent: xxx\nReferer: yyy`
+    final out = <String, String>{};
+    for (final line in source.header!.split(RegExp(r'[\r\n]+'))) {
+      final i = line.indexOf(':');
+      if (i > 0) out[line.substring(0, i).trim()] = line.substring(i + 1).trim();
+    }
+    return out;
   }
+
+  static final RegExp _schemeRe = RegExp(r'^[a-zA-Z][a-zA-Z0-9+.-]*://');
 
   String _abs(String base, String url) {
     url = url.trim();
     if (url.isEmpty) return url;
-    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    // 大小写混合的 HTTP:// 也算绝对地址
+    if (_schemeRe.hasMatch(url)) return url;
     if (url.startsWith('data:') || url.startsWith('file://')) return url;
     final b = Uri.tryParse(base);
     if (b == null) return url;
     if (url.startsWith('//')) return '${b.scheme}:$url';
-    if (url.startsWith('/')) return '${b.scheme}://${b.authority}$url';
-    // 相对路径
-    final pathSegs = b.pathSegments.toList();
-    if (pathSegs.isNotEmpty) pathSegs.removeLast();
-    for (final seg in url.split('/')) {
-      if (seg == '.' || seg.isEmpty) continue;
-      if (seg == '..') {
-        if (pathSegs.isNotEmpty) pathSegs.removeLast();
-      } else {
-        pathSegs.add(seg);
-      }
-    }
-    return b.replace(pathSegments: pathSegs).toString();
+    // RFC3986 相对解析：自带 ./ ../ 与 ?query 保留（旧 pathSegments 重组会把 ? 转义成 %3F）
+    return b.resolve(url).toString();
   }
 
   /// 解析 URL 模板：支持 `url{key}`、`url&&{opts}` 与真源最常见的 `url,{opts}` 单引号写法。
@@ -120,9 +118,20 @@ class BookSourceEngine {
     tpl = tpl.replaceAll(RegExp(r'<js>[\s\S]*?</js>'), '').trim();
     if (tpl.isEmpty) return empty;
 
+    String? optText;
+    final opts = _findOptions(tpl);
+    if (opts != null) {
+      optText = tpl.substring(opts.braceStart);
+      tpl = tpl.substring(0, opts.urlEnd).trim();
+    }
+
+    // GBK 源的 GET 关键词也要按 GBK 百分号编码，UTF-8 编码会搜不到
+    final keyCharset = optText == null ? null : _parseLegadoOptions(optText).charset;
+    final gbkKey = keyCharset != null && keyCharset.startsWith('gb');
+
     String substitute(String s) {
       if (key != null) {
-        final encodedKey = Uri.encodeComponent(key);
+        final encodedKey = gbkKey ? _gbkPercent(key) : Uri.encodeComponent(key);
         // 先替换 {{key}}，否则 {{key}} 会残留花括号
         s = s.replaceAll('{{key}}', encodedKey).replaceAll('{key}', encodedKey);
         s = s.replaceAll('{bookName}', encodedKey);
@@ -133,13 +142,6 @@ class BookSourceEngine {
       });
       s = s.replaceAll(RegExp(r'<1>'), '');
       return s;
-    }
-
-    String? optText;
-    final opts = _findOptions(tpl);
-    if (opts != null) {
-      optText = tpl.substring(opts.braceStart);
-      tpl = tpl.substring(0, opts.urlEnd).trim();
     }
 
     final url = _abs(source.bookSourceUrl, substitute(tpl));
@@ -227,6 +229,24 @@ class BookSourceEngine {
     return (body: body, method: method, charset: charset, contentType: contentType, headers: headers);
   }
 
+  /// GBK 百分号编码（GBK 源 GET 关键词须按 GBK 字节编码，UTF-8 会搜不到）
+  static String _gbkPercent(String s) {
+    final bytes = HttpClient.gbkEncode(s);
+    final sb = StringBuffer();
+    for (final b in bytes) {
+      // RFC 3986 非保留字符可裸写，其余 %XX 大写
+      if ((b >= 0x41 && b <= 0x5A) ||
+          (b >= 0x61 && b <= 0x7A) ||
+          (b >= 0x30 && b <= 0x39) ||
+          b == 0x2D || b == 0x2E || b == 0x5F || b == 0x7E) {
+        sb.writeCharCode(b);
+      } else {
+        sb.write('%${b.toRadixString(16).toUpperCase().padLeft(2, '0')}');
+      }
+    }
+    return sb.toString();
+  }
+
   /// 按构建结果发起请求（POST/GET、charset、自定义 headers）
   Future<PageResponse> _fetch(({
     String url,
@@ -258,9 +278,7 @@ class BookSourceEngine {
     if (built.url.isEmpty) return [];
     final resp = await _fetch(built);
     return _parseBookList(resp.body, resp.url,
-        listRule: source.ruleSearch.bookList.isEmpty
-            ? 'class.searchbook'
-            : source.ruleSearch.bookList,
+        listRule: source.ruleSearch.bookList,
         r: source.ruleSearch as Object);
   }
 
@@ -410,12 +428,14 @@ class BookSourceEngine {
       return _renderTemplates(l.first.trim(), scope);
     }
 
+    final pickedName = pick(rb.name);
+    final pickedAuthor = pick(rb.author);
     final detail = BookDetail()
       ..bookUrl = url
       ..sourceUrl = source.bookSourceUrl
       ..sourceName = source.bookSourceName
-      ..name = pick(rb.name).isNotEmpty ? pick(rb.name) : (name ?? '')
-      ..author = pick(rb.author).isNotEmpty ? pick(rb.author) : (author ?? '')
+      ..name = pickedName.isNotEmpty ? pickedName : (name ?? '')
+      ..author = pickedAuthor.isNotEmpty ? pickedAuthor : (author ?? '')
       ..intro = pick(rb.intro)
       ..kind = pick(rb.kind)
       ..lastChapter = pick(rb.lastChapter)
@@ -430,7 +450,9 @@ class BookSourceEngine {
     var body = resp.body;
     var pageUrl = resp.url;
     final rt = source.ruleToc;
-    var chapters = _parseTocPage(body, pageUrl, ContentAnalyzer.isJsonContent(body), 0);
+    // seen 跨 nextTocUrl 分页共享：分页目录常出现重复章节
+    final seen = <String>{};
+    var chapters = _parseTocPage(body, pageUrl, ContentAnalyzer.isJsonContent(body), 0, seen);
 
     // nextTocUrl 追加后续页
     if (rt.nextTocUrl.trim().isNotEmpty) {
@@ -444,7 +466,7 @@ class BookSourceEngine {
         body = resp2.body;
         pageUrl = resp2.url;
         isJson = ContentAnalyzer.isJsonContent(body);
-        chapters = [...chapters, ..._parseTocPage(body, pageUrl, isJson, chapters.length)];
+        chapters = [...chapters, ..._parseTocPage(body, pageUrl, isJson, chapters.length, seen)];
         nextUrl = RuleEngine.getString(body, rt.nextTocUrl, isJson: isJson);
       }
     }
@@ -452,11 +474,10 @@ class BookSourceEngine {
   }
 
   /// 解析一页目录：优先 chapterList 选节点后逐节点取字段（避免 name/url 平行列表错位），
-  /// 无 chapterList 时回退为全文平行列表对齐。按 url 去重（chapterList 的 && 组合常出现父子节点重复命中）。
-  List<Chapter> _parseTocPage(String body, String pageUrl, bool isJson, int startIndex) {
+  /// 无 chapterList 时回退为全文平行列表对齐。按绝对 url 去重（chapterList 的 && 组合常出现父子节点重复命中）。
+  List<Chapter> _parseTocPage(String body, String pageUrl, bool isJson, int startIndex, Set<String> seen) {
     final rt = source.ruleToc;
     final out = <Chapter>[];
-    final seenUrls = <String>{};
     Map<String, dynamic>? rootCtx;
     if (isJson) {
       try {
@@ -492,10 +513,11 @@ class BookSourceEngine {
         title = _cleanText(title);
         final url = pick(rt.chapterUrl);
         if (title.isEmpty || url.isEmpty) continue;
-        if (!seenUrls.add(url)) continue;
+        final absUrl = _abs(pageUrl, url);
+        if (!seen.add(absUrl)) continue;
         final vipRaw = rt.isVip.trim().isEmpty ? '' : pick(rt.isVip);
         final isVip = vipRaw.isNotEmpty && vipRaw != '0' && vipRaw.toLowerCase() != 'false';
-        out.add(Chapter(title, _abs(pageUrl, url), idx++, isVip: isVip));
+        out.add(Chapter(title, absUrl, idx++, isVip: isVip));
       }
       if (out.isNotEmpty) return out;
     }
@@ -510,7 +532,7 @@ class BookSourceEngine {
       final title = _cleanText(names[i]);
       if (title.isEmpty) continue;
       final absUrl = _abs(pageUrl, urls[i]);
-      if (absUrl.isNotEmpty && !seenUrls.add(absUrl)) continue;
+      if (absUrl.isNotEmpty && !seen.add(absUrl)) continue;
       out.add(Chapter(title, absUrl, startIndex + out.length));
     }
     return out;
@@ -578,15 +600,15 @@ class BookSourceEngine {
       var seg = rawSeg.trim();
       if (seg.startsWith('##')) seg = seg.substring(2);
       final parts = seg.split('##');
-      if (parts.length >= 2) {
-        try {
+      try {
+        if (parts.length >= 2) {
           text = text.replaceAllMapped(RegExp(parts[0], dotAll: true), (m) => _expand(m, parts[1]));
-        } catch (_) {}
-      } else if (parts.length == 1 && parts.first.isNotEmpty) {
-        try {
+        } else if (parts.length == 1 && parts.first.isNotEmpty) {
           text = text.replaceAll(RegExp(parts.first, dotAll: true), '');
-        } catch (_) {}
-      }
+        }
+      } catch (_) {}
+      // 病态正则+模板可把文本滚成天文数字，按章上限截断
+      if (text.length > 2000000) text = text.substring(0, 2000000);
     }
     return text;
   }
@@ -601,6 +623,8 @@ class BookSourceEngine {
 
   static String _normalizeContent(String raw) {
     var t = raw
+        // script/style 整块删除，否则残留的 JS/CSS 文本会混进正文
+        .replaceAll(RegExp(r'<(script|style)\b[^>]*>[\s\S]*?</\1\s*>', caseSensitive: false), '')
         .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
         .replaceAll(RegExp(r'</p>', caseSensitive: false), '\n')
         .replaceAll('&nbsp;', ' ')
