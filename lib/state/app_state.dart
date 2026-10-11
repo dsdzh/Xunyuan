@@ -29,18 +29,22 @@ class SourceState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 导入书源文本（JSON 数组 / JSONL）。返回导入数量。
-  Future<int> importText(String text) async {
+  /// 导入书源文本（JSON 数组 / JSONL / 常见导出包装）。返回新增/更新/跳过统计。
+  Future<ImportResult> importText(String text) async {
     final list = parseBookSources(text);
     // 上限防御：异常/恶意大文件不致撑爆存储与内存
-    if (list.length > 10000) list.removeRange(10000, list.length);
-    if (list.isEmpty) return 0;
-    await StorageService.instance.importSources(list);
+    var overCap = 0;
+    if (list.length > 10000) {
+      overCap = list.length - 10000;
+      list.removeRange(10000, list.length);
+    }
+    if (list.isEmpty) return ImportResult(skipped: overCap);
+    final r = await StorageService.instance.importSources(list);
     await load();
-    return list.length;
+    return ImportResult(added: r.added, updated: r.updated, skipped: r.skipped + overCap);
   }
 
-  Future<int> importFromUrl(String url) async {
+  Future<ImportResult> importFromUrl(String url) async {
     final trimmed = url.trim();
     final uri = Uri.tryParse(trimmed);
     if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {

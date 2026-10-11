@@ -16,10 +16,13 @@ class SourcePage extends StatelessWidget {
 
   Future<void> _importFromText(BuildContext context, String text) async {
     final state = context.read<SourceState>();
-    final count = await state.importText(text);
+    final r = await state.importText(text);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(count > 0 ? '成功导入 $count 个书源' : '未解析到有效书源（需为 Legado JSON 格式）')),
+      SnackBar(
+          content: Text(r.isEmpty
+              ? '${r.summary}（需为 Legado 阅读3.0 JSON 格式）'
+              : '导入完成：${r.summary}')),
     );
   }
 
@@ -86,10 +89,12 @@ class SourcePage extends StatelessWidget {
     if (!context.mounted) return;
     final state = context.read<SourceState>();
     try {
-      final count = await state.importFromUrl(url);
+      final r = await state.importFromUrl(url);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(count > 0 ? '成功导入 $count 个书源' : '链接内容中未解析到有效书源（需为 Legado JSON 格式）')));
+            content: Text(r.isEmpty
+                ? '${r.summary}（链接内容需为 Legado 阅读3.0 JSON 格式）'
+                : '导入完成：${r.summary}')));
       }
     } catch (e) {
       if (context.mounted) {

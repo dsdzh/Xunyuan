@@ -258,11 +258,14 @@ class ContentRule {
       );
 }
 
-/// 解析书源导入文本：支持 JSON 数组、JSONL（每行一个对象）、以及嵌套在
-/// `{"books":[...]}` / `{"data":[...]}` 中的数组。
+/// 解析书源导入文本：支持顶层 JSON 数组、JSONL（每行一个对象），以及嵌套在
+/// `{"books":[...]}` / `{"data":[...]}` / `{"bookSourceList":[...]}` 等常见
+/// 导出包装里的数组。按 bookSourceUrl 去重（保留后出现的），丢弃缺 URL / 结构
+/// 损坏的单条而不影响其余条目。
 List<BookSource> parseBookSources(String text) {
-  final trimmed = text.trim();
-  final list = <Map<String, dynamic>>[];
+  // 去除 UTF-8 BOM：Dart trim 不处理 U+FEFF，带 BOM 的文件会让 jsonDecode 直接抛
+  final trimmed = _stripBom(text).trim();
+  final candidates = <Map<String, dynamic>>[];
   dynamic decoded;
   try {
     decoded = _jsonDecodeLoose(trimmed);
@@ -271,34 +274,70 @@ List<BookSource> parseBookSources(String text) {
   }
   if (decoded is List) {
     for (final e in decoded) {
-      if (e is Map) list.add(e.cast<String, dynamic>());
+      if (e is Map) candidates.add(e.cast<String, dynamic>());
     }
   } else if (decoded is Map) {
-    final arr = decoded['books'] ?? decoded['data'] ?? decoded['source'] ?? decoded['list'];
+    dynamic arr;
+    for (final key in const ['books', 'bookSourceList', 'bookSources', 'sourceList', 'sources', 'data', 'source', 'list']) {
+      if (decoded[key] is List) {
+        arr = decoded[key];
+        break;
+      }
+    }
     if (arr is List) {
       for (final e in arr) {
-        if (e is Map) list.add(e.cast<String, dynamic>());
+        if (e is Map) candidates.add(e.cast<String, dynamic>());
       }
     } else if (decoded['bookSourceUrl'] != null) {
-      list.add(decoded.cast<String, dynamic>());
+      candidates.add(decoded.cast<String, dynamic>());
     }
   } else {
     // JSONL：逐行解析
     for (final line in trimmed.split(RegExp(r'\r?\n'))) {
-      final l = line.trim();
+      final l = _stripBom(line).trim();
       if (l.isEmpty) continue;
       try {
         final m = _jsonDecodeLoose(l);
-        if (m is Map && m['bookSourceUrl'] != null) list.add(m.cast<String, dynamic>());
+        if (m is Map && m['bookSourceUrl'] != null) candidates.add(m.cast<String, dynamic>());
       } catch (_) {}
     }
   }
-  return list
-      .where((e) => (e['bookSourceUrl'] ?? '').toString().isNotEmpty)
-      .map(BookSource.fromJson)
-      .toList();
+
+  // 按 URL 去重（后出现覆盖先前），并逐条宽容构建，单条损坏不拖垮整体
+  final byUrl = <String, BookSource>{};
+  for (final e in candidates) {
+    final url = (e['bookSourceUrl'] ?? '').toString();
+    if (url.isEmpty) continue;
+    try {
+      final s = BookSource.fromJson(e);
+      if (s.bookSourceUrl.isEmpty) continue;
+      byUrl[s.bookSourceUrl] = s;
+    } catch (_) {}
+  }
+  return byUrl.values.toList();
 }
+
+String _stripBom(String s) => s.isNotEmpty && s.codeUnitAt(0) == 0xFEFF ? s.substring(1) : s;
 
 dynamic _jsonDecodeLoose(String text) {
   return jsonDecode(text);
+}
+
+/// 书源导入结果统计，用于向用户如实反馈"新增 / 更新 / 跳过"。
+class ImportResult {
+  final int added; // 本地原本没有、本次新建的源
+  final int updated; // URL 已存在、按新内容刷新的源
+  final int skipped; // 缺 URL / 结构损坏 / 写盘失败 / 超上限被丢弃的条目
+  const ImportResult({this.added = 0, this.updated = 0, this.skipped = 0});
+  int get changed => added + updated;
+  bool get isEmpty => changed == 0;
+
+  String get summary {
+    if (isEmpty) return skipped > 0 ? '未导入有效书源（$skipped 条无法解析）' : '未导入有效书源';
+    final parts = <String>[];
+    if (added > 0) parts.add('新增 $added');
+    if (updated > 0) parts.add('更新 $updated');
+    if (skipped > 0) parts.add('跳过 $skipped');
+    return parts.join('，');
+  }
 }

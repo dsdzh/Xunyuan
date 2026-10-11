@@ -54,24 +54,44 @@ class StorageService {
     await _sources.put(source.bookSourceUrl, jsonEncode(j));
   }
 
-  Future<int> importSources(List<BookSource> incoming) => _serialized(() async {
-        var count = 0;
+  Future<ImportResult> importSources(List<BookSource> incoming) => _serialized(() async {
+        var added = 0, updated = 0, skipped = 0;
         for (final s in incoming) {
-          final j = Map<String, dynamic>.from(s.raw);
-          // 更新导入不带 enabled 时沿用旧值，避免用户逐条关闭的源被整批重置
-          if (!j.containsKey('enabled')) {
-            final old = _sources.get(s.bookSourceUrl);
-            if (old != null) {
+          final url = s.bookSourceUrl;
+          if (url.isEmpty) {
+            skipped++;
+            continue;
+          }
+          try {
+            final j = Map<String, dynamic>.from(s.raw);
+            j['bookSourceUrl'] = url;
+            final old = _sources.get(url);
+            if (old == null) {
+              // 新源：沿用文件里的 enabled（音频/视频/失效源常被作者有意标成 false）
+              j['enabled'] = s.enabled;
+              await _sources.put(url, jsonEncode(j));
+              added++;
+            } else {
+              // 已存在：更新规则等内容，但保留用户本地的开关与排序，
+              // 否则重新导入会把用户逐个关闭/排序的源整批重置
               try {
                 final oj = jsonDecode(old);
-                if (oj is Map && oj.containsKey('enabled')) j['enabled'] = oj['enabled'];
-              } catch (_) {}
+                if (oj is Map) {
+                  if (oj.containsKey('enabled')) j['enabled'] = oj['enabled'];
+                  if (oj.containsKey('customOrder')) j['customOrder'] = oj['customOrder'];
+                }
+              } catch (_) {
+                j['enabled'] = s.enabled;
+              }
+              await _sources.put(url, jsonEncode(j));
+              updated++;
             }
+          } catch (_) {
+            // 单条写盘/编码失败不拖垮整个导入
+            skipped++;
           }
-          await _sources.put(s.bookSourceUrl, jsonEncode(j));
-          count++;
         }
-        return count;
+        return ImportResult(added: added, updated: updated, skipped: skipped);
       });
 
   Future<void> removeSource(String url) => _sources.delete(url);
