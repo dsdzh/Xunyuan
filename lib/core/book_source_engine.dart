@@ -633,11 +633,12 @@ class BookSourceEngine {
   }
 
   String _expand(Match m, String template) {
-    var r = template;
-    for (var i = m.groupCount; i >= 0; i--) {
-      r = r.replaceAll('\$$i', m.group(i) ?? '');
-    }
-    return r;
+    // 单次替换 $N，绝不把已插入的组文本当作新的 $N 再展开（防正文被重复替换污染）
+    return template.replaceAllMapped(RegExp(r'\$(\d+)'), (g) {
+      final i = int.tryParse(g[1]!);
+      if (i == null || i > m.groupCount) return g[0]!;
+      return m.group(i) ?? '';
+    });
   }
 
   static String _normalizeContent(String raw) {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -48,7 +49,23 @@ class SourcePage extends StatelessWidget {
       );
       final file = files.isNotEmpty ? files.first : null;
       if (file == null) return;
-      text = utf8.decode(await file.readAsBytes(), allowMalformed: true);
+      // 上限护栏：数百 MB 的 .json 会让 readAsBytes+utf8.decode+jsonDecode 各分配整份副本而 OOM 崩溃
+      // （http 路径有 20MB 流式限长，文件路径此前完全绕过；10000 条上限在解析后才生效，救不了）
+      final p = file.path;
+      if (p != null && File(p).lengthSync() > 32 * 1024 * 1024) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('文件过大（超过 32MB），请精简后再导入')));
+        }
+        return;
+      }
+      final bytes = await file.readAsBytes();
+      if (bytes.length > 32 * 1024 * 1024) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('文件过大（超过 32MB），请精简后再导入')));
+        }
+        return;
+      }
+      text = utf8.decode(bytes, allowMalformed: true);
     } catch (_) {
       // content:// 解析失败、文件被移动等都会在这里抛
       if (context.mounted) {

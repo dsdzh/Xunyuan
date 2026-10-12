@@ -27,18 +27,33 @@ class _ExplorePageState extends State<ExplorePage> {
   bool _finished = false;
 
   @override
-  void initState() {
-    super.initState();
-    final withExplore = context.read<SourceState>().enabledNovelSources.where((s) => (s.exploreUrl ?? '').isNotEmpty).toList();
-    if (withExplore.isNotEmpty) {
-      _source = withExplore.first;
-      _categories = BookSourceEngine.exploreCategories(withExplore.first);
-      if (_categories.isNotEmpty) {
-        _current = _categories.first;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _load();
-        });
-      }
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 用 watch 建立对 SourceState 的依赖：IndexedStack 让本页常驻，initState 里的 read 只跑一次，
+    // 用户导入/启停书源后本态不会重建；靠依赖回调在书源失效或缺失时重新选取，否则"发现"要到重启才有内容
+    final ss = context.watch<SourceState>();
+    final cur = _source;
+    if (cur != null &&
+        ss.sources.any((s) =>
+            s.enabled && s.bookSourceUrl == cur.bookSourceUrl && (s.exploreUrl ?? '').isNotEmpty)) {
+      return; // 当前书源仍有效
+    }
+    final withExplore =
+        ss.enabledNovelSources.where((s) => (s.exploreUrl ?? '').isNotEmpty).toList();
+    if (withExplore.isEmpty) {
+      _source = null;
+      _categories = const [];
+      _current = null;
+      return;
+    }
+    _source = withExplore.first;
+    _categories = BookSourceEngine.exploreCategories(withExplore.first);
+    _current = _categories.isNotEmpty ? _categories.first : null;
+    _resetList();
+    if (_current != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _load();
+      });
     }
   }
 

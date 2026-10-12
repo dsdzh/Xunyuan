@@ -190,11 +190,13 @@ class RuleEngine {
   }
 
   static String _expand(Match m, String template) {
-    var r = template;
-    for (var i = m.groupCount; i >= 0; i--) {
-      r = r.replaceAll('\$$i', m.group(i) ?? '');
-    }
-    return r;
+    // 单次从左到右替换 $N，用组内容直接产出，避免把已插入的组文本当作新的 $N 再次展开
+    // （旧的下行循环会让捕获自页面、内含 "$0"/"$1" 字面量的组值被重复替换而注入/复制正文）
+    return template.replaceAllMapped(RegExp(r'\$(\d+)'), (g) {
+      final i = int.tryParse(g[1]!);
+      if (i == null || i > m.groupCount) return g[0]!;
+      return m.group(i) ?? '';
+    });
   }
 
   static dynamic _asJsonValue(String content) {
@@ -600,18 +602,20 @@ class RuleEngine {
 
   static List<dynamic> current0(dynamic item) => item is List ? item : [item];
 
-  static void _descend(dynamic node, String key, List<dynamic> out) {
+  static void _descend(dynamic node, String key, List<dynamic> out, [int depth = 0]) {
+    // 防御恶意/畸形深度嵌套 JSON（如 2 万层 `[[[...]]]`，jsonDecode 能过但此处递归会 StackOverflow）
+    if (depth > 128) return;
     if (node is Map) {
       for (final entry in node.entries) {
         if (entry.key == key) {
           out.add(entry.value);
         } else {
-          _descend(entry.value, key, out);
+          _descend(entry.value, key, out, depth + 1);
         }
       }
     } else if (node is List) {
       for (final e in node) {
-        _descend(e, key, out);
+        _descend(e, key, out, depth + 1);
       }
     }
   }
@@ -631,11 +635,14 @@ class RuleEngine {
           t = '..$raw';
         } else {
           // $..['key'] 括号式递归下降：归一为 ..key；$..[数字] 罕见，保留普通下标
-          final inner = raw.substring(1, raw.length - 1).trim();
-          if (inner.length >= 2 &&
-              (inner[0] == "'" || inner[0] == '"') &&
-              inner.endsWith(inner[0])) {
-            t = '..${inner.substring(1, inner.length - 1)}';
+          // raw 可能只是畸形的单个 `[`（如规则尾断成 `$..[`），须先校验长度与右括号再 substring，否则 RangeError
+          if (raw.length >= 2 && raw.endsWith(']')) {
+            final inner = raw.substring(1, raw.length - 1).trim();
+            if (inner.length >= 2 &&
+                (inner[0] == "'" || inner[0] == '"') &&
+                inner.endsWith(inner[0])) {
+              t = '..${inner.substring(1, inner.length - 1)}';
+            }
           }
         }
       }

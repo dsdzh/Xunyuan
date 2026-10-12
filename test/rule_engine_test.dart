@@ -85,4 +85,20 @@ void main() {
     final t = RuleEngine.getStringList(json, r'''$..['title']''', isJson: true);
     expect(t, containsAll(<String>['第一章', '第二章']));
   });
+
+  test(r'正则替换 $N 单次展开：组值含 "$0" 字面量不被二次替换', () {
+    // 旧下行循环：先替 $1 得到 "$0"，再在 i=0 把 "$0" 又替成正文 → 内容被复制（"$0y"）
+    final r = RuleEngine.getStringList(r'$0y', r'$##(\$0)(y)##$1');
+    expect(r, [r'$0']);
+  });
+
+  test(r'畸形 $..[ 规则不抛 RangeError', () {
+    expect(RuleEngine.getStringList('{"a":[1,2]}', r'$..[', isJson: true), isEmpty);
+    expect(RuleEngine.getStringList('{"a":[1,2]}', r'$..[title', isJson: true), isEmpty);
+  });
+
+  test(r'深层嵌套 JSON 的 $..key 不 StackOverflow', () {
+    final deep = '[' * 20000 + ']' * 20000; // 递归下降深度护栏须拦截
+    expect(() => RuleEngine.getStringList(deep, r'$..title', isJson: true), returnsNormally);
+  });
 }
