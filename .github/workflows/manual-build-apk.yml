@@ -175,11 +175,11 @@ jobs:
               --prerelease="${{ inputs.prerelease }}" \
               --target "$GITHUB_SHA"
           fi
-          # 资产名带 short_sha，滚动标签下不清就会越堆越多，先全删再传本轮的
-          mapfile -t old_assets < <(gh release view "$TAG" --json assets --jq '.assets[].name')
-          if [ "${#old_assets[@]}" -gt 0 ]; then
-            gh release delete-assets "$TAG" "${old_assets[@]}"
-          fi
+          # 资产名带 short_sha，滚动标签下不清就会越堆越多，先全删再传本轮的。
+          # 注意是 delete-asset（单数，一次一个），没有 delete-assets 这个命令。
+          while IFS= read -r old_asset; do
+            if [ -n "$old_asset" ]; then gh release delete-asset "$TAG" "$old_asset" --yes; fi
+          done < <(gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null)
           gh release upload "$TAG" dist/*.apk --clobber
           {
             echo "### 已发布到 Release"
