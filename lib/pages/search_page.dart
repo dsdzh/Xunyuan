@@ -18,6 +18,36 @@ class SourceGroupResult {
   SourceGroupResult(this.source);
 }
 
+class SearchHit {
+  final SearchBook book;
+  final BookSource source;
+
+  /// 同名同作者但在其它书源也命中的条数，用于"起点中文 +3 源"这类标注
+  final int dupes;
+
+  SearchHit(this.book, this.source, {this.dupes = 0});
+}
+
+/// 各源结果按"书名+作者"并成一条：同一本书往往十几个源都返回，
+/// 按源分组刷屏只是噪音。保留首次命中的那个源，顺序即返回顺序。
+List<SearchHit> mergeSearchResults(List<SourceGroupResult> groups) {
+  final order = <String>[];
+  final first = <String, SearchHit>{};
+  final dupes = <String, int>{};
+  for (final g in groups) {
+    for (final b in g.books) {
+      final key = '${b.name}|${b.author}';
+      if (!first.containsKey(key)) {
+        first[key] = SearchHit(b, g.source);
+        order.add(key);
+      } else {
+        dupes[key] = (dupes[key] ?? 0) + 1;
+      }
+    }
+  }
+  return [for (final k in order) SearchHit(first[k]!.book, first[k]!.source, dupes: dupes[k] ?? 0)];
+}
+
 class SearchPage extends StatefulWidget {
   final String initialKeyword;
   const SearchPage({super.key, this.initialKeyword = ''});
@@ -154,13 +184,18 @@ class _SearchPageState extends State<SearchPage> {
     group.loading = false;
     if (gen != _searchGen) return; // 新一轮搜索已开始，丢弃过期结果
     if (mounted) setState(() {});
-    if (group.books.isNotEmpty && group.source.enabled) {
-      // 记录成功书源次序 —— 简单实现：不重排
-    }
   }
+
+  // 各源结果按"书名+作者"并成一条：同一本书往往十几个源都返回，分组刷屏只是噪音
+  List<SearchHit> _flatten() => mergeSearchResults(_results);
 
   @override
   Widget build(BuildContext context) {
+    final hits = _flatten();
+    final returned = _results.where((g) => !g.loading).length;
+    final searching = _results.isNotEmpty && returned < _results.length;
+    final failed = _results.where((g) => g.error != null).length;
+
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -170,6 +205,7 @@ class _SearchPageState extends State<SearchPage> {
               child: TextField(
                 controller: _controller,
                 onSubmitted: _doSearch,
+                textInputAction: TextInputAction.search,
                 decoration: const InputDecoration(
                   hintText: '输入书名/作者搜索',
                   border: InputBorder.none,
@@ -182,54 +218,51 @@ class _SearchPageState extends State<SearchPage> {
         ),
       ),
       body: _results.isEmpty
-          ? const Center(child: Text('搜索结果将显示在这里'))
+          ? const Center(child: Text('输入书名或作者，回车搜索全部启用书源'))
           : RefreshIndicator(
               onRefresh: () => _doSearch(_controller.text),
               child: ListView(
+                padding: const EdgeInsets.only(bottom: 24),
                 children: [
-                  for (final g in _results)
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                          child: Row(
-                            children: [
-                              Text(g.source.bookSourceName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                              const SizedBox(width: 8),
-                              if (g.loading)
-                                const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                              else if (g.error != null)
-                                Expanded(
-                                  child: Text('失败: ${g.error}',
-                                      maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: Colors.red.shade400)),
-                                )
-                              else
-                                Text('${g.books.length} 条结果', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-                            ],
-                          ),
+                  if (searching)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                      child: Row(
+                        children: [
+                          const SizedBox(
+                              width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                          const SizedBox(width: 10),
+                          Text('已返回 $returned/${_results.length} 个书源 · ${hits.length} 本',
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                        ],
+                      ),
+                    ),
+                  for (final h in hits)
+                    BookTile(
+                      name: h.book.name,
+                      author: h.book.author,
+                      coverUrl: h.book.coverUrl,
+                      subtitle: [
+                        if (h.book.kind.isNotEmpty) h.book.kind,
+                        if (h.book.lastChapter.isNotEmpty) h.book.lastChapter,
+                        h.dupes > 0
+                            ? '${h.source.bookSourceName} +${h.dupes} 源'
+                            : h.source.bookSourceName,
+                      ].join(' · '),
+                      progress: h.book.intro,
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => DetailPage(result: h.book, source: h.source),
+                      )),
+                    ),
+                  if (!searching && hits.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 48, 16, 0),
+                      child: Center(
+                        child: Text(
+                          failed > 0 ? '没有结果，${_results.length} 个书源中 $failed 个请求失败' : '没有找到相关书籍',
+                          style: TextStyle(color: Colors.grey.shade600),
                         ),
-                        if (!g.loading && g.books.isEmpty && g.error == null)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 16),
-                            child: Text('无结果', style: TextStyle(color: Colors.grey)),
-                          ),
-                        for (final b in g.books)
-                          BookTile(
-                            name: b.name,
-                            author: b.author,
-                            coverUrl: b.coverUrl,
-                            subtitle: [
-                              if (b.kind.isNotEmpty) b.kind,
-                              if (b.lastChapter.isNotEmpty) b.lastChapter,
-                            ].join(' · '),
-                            progress: b.intro,
-                            onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                              builder: (_) => DetailPage(result: b, source: g.source),
-                            )),
-                          ),
-                        const Divider(height: 1),
-                      ],
+                      ),
                     ),
                 ],
               ),
