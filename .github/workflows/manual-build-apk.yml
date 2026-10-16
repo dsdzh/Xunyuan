@@ -16,10 +16,10 @@ on:
         type: string
         default: ''
       bundles:
-        description: '打包组合：1 = arm64+armv7+通用，2 = 仅 arm64+armv7，3 = 再加 x86_64'
+        description: '打包组合：1 = arm64+armv7+通用，2 = 仅 arm64+armv7，3 = 再加 x86_64，4 = 只出一个通用包'
         required: true
         type: choice
-        options: ['1', '2', '3']
+        options: ['1', '2', '3', '4']
         default: '1'
       obfuscate:
         description: '混淆 Dart 符号（关掉便于直接对照崩溃栈，不必 symbolize）'
@@ -96,6 +96,7 @@ jobs:
       - run: flutter pub get
 
       - name: 构建 split APK
+        if: inputs.bundles != '4'
         run: |
           args="--release --split-per-abi"
           if [ "${{ inputs.obfuscate }}" = "true" ]; then
@@ -104,7 +105,7 @@ jobs:
           flutter build apk $args
 
       - name: 构建通用 APK
-        if: inputs.bundles == '1' || inputs.bundles == '3'
+        if: inputs.bundles == '1' || inputs.bundles == '3' || inputs.bundles == '4'
         run: |
           args="--release"
           if [ "${{ inputs.obfuscate }}" = "true" ]; then
@@ -124,12 +125,16 @@ jobs:
           mkdir -p "$out"
           # 资产名必须纯 ASCII：GitHub 上传接口会把非 ASCII 段折叠成单个下划线，
           # "寻源_v0.1.0-xxx.apk" 到 Release 上会变成 "_v0.1.0-xxx.apk"。
-          cp app-arm64-v8a-release.apk  "$out/xunyuan_v${V}-${SHA}_arm64.apk"
-          cp app-armeabi-v7a-release.apk "$out/xunyuan_v${V}-${SHA}_armv7.apk"
+          pfx="$out/xunyuan_v${V}-${SHA}"
+          # 组合 4 根本没跑 split 构建，无条件 cp 会因文件不存在把整步弄挂
+          if [ "$BUNDLES" != "4" ]; then
+            cp app-arm64-v8a-release.apk   "${pfx}_arm64.apk"
+            cp app-armeabi-v7a-release.apk "${pfx}_armv7.apk"
+          fi
           case "$BUNDLES" in
-            1) cp app-release.apk "$out/xunyuan_v${V}-${SHA}_universal.apk" ;;
-            3) cp app-x86_64-release.apk "$out/xunyuan_v${V}-${SHA}_x86_64.apk"
-               cp app-release.apk "$out/xunyuan_v${V}-${SHA}_universal.apk" ;;
+            1|4) cp app-release.apk "${pfx}_universal.apk" ;;
+            3) cp app-x86_64-release.apk "${pfx}_x86_64.apk"
+               cp app-release.apk "${pfx}_universal.apk" ;;
           esac
           ls -la "$out"
 
