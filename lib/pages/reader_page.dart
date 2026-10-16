@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../core/book_source_engine.dart';
 import '../models/book_source.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
+import '../widgets/page_curl.dart';
 
 class ReaderPage extends StatefulWidget {
   final Map<String, dynamic> book;
@@ -32,7 +35,8 @@ class ReaderPage extends StatefulWidget {
   State<ReaderPage> createState() => _ReaderPageState();
 }
 
-class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _ReaderPageState extends State<ReaderPage>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final BookSourceEngine _engine = BookSourceEngine(widget.source);
   late final ShelfState _shelf;
 
@@ -66,12 +70,17 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   late bool _scrollMode = context.read<ReaderSettings>().scrollMode;
 
   // 翻页动画状态
-  late final AnimationController _turnCtrl =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: 320));
+  late final AnimationController _turnCtrl = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 320),
+  );
   ({String text, int pageNo, int total, bool showTitle})? _turnFrom;
   int _turnDir = 1;
   bool _dragTurnActive = false;
   double _dragAccum = 0;
+  // 仿真卷页：手势开始时从当前页 RepaintBoundary 同步抓的位图（设备像素）
+  final GlobalKey _pageKey = GlobalKey();
+  ui.Image? _turnImage;
 
   double _progress = 0;
   int _progressChapter = 0;
@@ -100,19 +109,26 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
           _turnFrom = null;
           _dragTurnActive = false;
         });
+        _releaseTurnImage();
         // 复位到 0，否则下次 animateTo(1) 命中 target==value 走零时长分支、
         // 既不播动画也不回调 listener，_turnFrom 会永久残留、翻页动画只生效一次
         _turnCtrl.value = 0;
-      } else if (_turnCtrl.status == AnimationStatus.dismissed && _dragTurnActive) {
+      } else if (_turnCtrl.status == AnimationStatus.dismissed &&
+          _dragTurnActive) {
         // 拖到一半松手回弹：退回原页
         setState(() {
           _readPage = _turnFrom!.pageNo - 1;
           _turnFrom = null;
           _dragTurnActive = false;
         });
+        _releaseTurnImage();
       }
     });
-    _progressChapter = (widget.startIndex ?? _intOf(widget.book['durChapterIndex'])).clamp(0, 1 << 30);
+    _progressChapter =
+        (widget.startIndex ?? _intOf(widget.book['durChapterIndex'])).clamp(
+          0,
+          1 << 30,
+        );
     _currentChapter = _progressChapter;
     _restoreChapter = _progressChapter;
     final rp = widget.book['durChapterProgress'];
@@ -151,12 +167,15 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     }
   }
 
-  static int _intOf(dynamic v) => v is int ? v : int.tryParse('${v ?? ''}') ?? 0;
+  static int _intOf(dynamic v) =>
+      v is int ? v : int.tryParse('${v ?? ''}') ?? 0;
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _saveProgress();
+    _turnImage?.dispose();
+    _turnImage = null;
     _turnCtrl.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -167,14 +186,22 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final ch = _progressChapter.clamp(0, _chapters.length - 1);
     final title = _chapters[ch].title;
     if (title.isEmpty) return;
-    unawaited(_shelf.recordRead(widget.book, ch, title, _scrollMode ? _lastChapterRatio : _progress,
-        tocCount: _chapters.length));
+    unawaited(
+      _shelf.recordRead(
+        widget.book,
+        ch,
+        title,
+        _scrollMode ? _lastChapterRatio : _progress,
+        tocCount: _chapters.length,
+      ),
+    );
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 进程可能在后台被系统回收，退到后台即落盘进度而非只靠 dispose
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
       _saveProgress();
     }
   }
@@ -185,12 +212,15 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     if (!_scrollController.hasClients || _paragraphs.isEmpty) return 0;
     final start = _chapterStart[chapter] ?? 0;
     var end = start;
-    while (end < _paragraphChapter.length && _paragraphChapter[end] == chapter) {
+    while (end < _paragraphChapter.length &&
+        _paragraphChapter[end] == chapter) {
       end++;
     }
     final count = end - start;
     if (count <= 1) return 0;
-    final paraIdx = (_scrollController.position.pixels / _avgParagraphHeight()).floor().clamp(start, end - 1);
+    final paraIdx = (_scrollController.position.pixels / _avgParagraphHeight())
+        .floor()
+        .clamp(start, end - 1);
     return ((paraIdx - start) / (count - 1)).clamp(0.0, 1.0);
   }
 
@@ -200,8 +230,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       _error = null;
     });
     try {
-      final tocUrl = (widget.book['tocUrl'] ?? widget.book['bookUrl'] ?? '').toString();
-      var chapters = force ? null : StorageService.instance.getCachedToc(tocUrl);
+      final tocUrl = (widget.book['tocUrl'] ?? widget.book['bookUrl'] ?? '')
+          .toString();
+      var chapters = force
+          ? null
+          : StorageService.instance.getCachedToc(tocUrl);
       if (chapters == null || chapters.isEmpty) {
         chapters = await _engine.toc(tocUrl);
         if (chapters.isNotEmpty) {
@@ -246,7 +279,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   Future<String> _chapterContent(int idx) async {
     final chapter = _chapters[idx];
     // 缓存键带上书籍标识与章节序号，避免同书源不同书、或 url 为空的章节互相覆盖
-    final bookId = widget.book['key']?.toString() ?? widget.source.bookSourceUrl;
+    final bookId =
+        widget.book['key']?.toString() ?? widget.source.bookSourceUrl;
     final cacheKey = 'ch::$bookId::$idx::${chapter.url}';
     final cached = StorageService.instance.getCachedChapter(cacheKey);
     if (cached != null) return cached;
@@ -276,7 +310,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     _chapterStart.clear();
     _firstLoadedChapter = chapterIdx;
     _lastLoadedChapter = chapterIdx - 1;
-    for (var i = chapterIdx; i < math.min(chapterIdx + 2, _chapters.length); i++) {
+    for (
+      var i = chapterIdx;
+      i < math.min(chapterIdx + 2, _chapters.length);
+      i++
+    ) {
       await _appendChapter(i);
       // 期间又发起了新的重载：本协程立即作废，避免交错追加
       if (!mounted || epoch != _loadEpoch) {
@@ -293,13 +331,19 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       _restoreRatio = null;
       final start = _chapterStart[chapterIdx] ?? 0;
       var end = start;
-      while (end < _paragraphChapter.length && _paragraphChapter[end] == chapterIdx) {
+      while (end < _paragraphChapter.length &&
+          _paragraphChapter[end] == chapterIdx) {
         end++;
       }
       final paraIdx = start + ratio * math.max(end - start - 1, 0);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _scrollController.hasClients) {
-          _scrollController.jumpTo((paraIdx * _avgParagraphHeight()).clamp(0.0, _scrollController.position.maxScrollExtent));
+          _scrollController.jumpTo(
+            (paraIdx * _avgParagraphHeight()).clamp(
+              0.0,
+              _scrollController.position.maxScrollExtent,
+            ),
+          );
         }
       });
     }
@@ -340,7 +384,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     }
     // 已被 _loadAround 接管（代数变了）：_loadingContent 归它负责，本次前插作废
     if (epoch != _loadEpoch) return;
-    final before = _scrollController.hasClients ? _scrollController.position.pixels : 0.0;
+    final before = _scrollController.hasClients
+        ? _scrollController.position.pixels
+        : 0.0;
     _paragraphs.insertAll(0, paras);
     _paragraphChapter.insertAll(0, List.filled(paras.length, idx));
     for (final k in _chapterStart.keys.toList()) {
@@ -366,7 +412,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   void _onScroll(ScrollNotification n) {
     if (!_scrollController.hasClients) return;
     final pos = _scrollController.position;
-    _progress = pos.maxScrollExtent <= 0 ? 0 : (pos.pixels / pos.maxScrollExtent).clamp(0.0, 1.0);
+    _progress = pos.maxScrollExtent <= 0
+        ? 0
+        : (pos.pixels / pos.maxScrollExtent).clamp(0.0, 1.0);
     if (n is ScrollUpdateNotification) {
       // 重载期间正文被清空，据其推算的章节是垃圾，不覆盖真实进度
       if (!_reloading) {
@@ -395,7 +443,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   }
 
   int _visibleChapter() {
-    if (_paragraphChapter.isEmpty || !_scrollController.hasClients) return _currentChapter;
+    if (_paragraphChapter.isEmpty || !_scrollController.hasClients) {
+      return _currentChapter;
+    }
     final approxPara = _avgParagraphHeight();
     var paraIdx = (_scrollController.position.pixels / approxPara).floor();
     paraIdx = paraIdx.clamp(0, _paragraphChapter.length - 1);
@@ -462,34 +512,41 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final content = _loadingToc
         ? Center(child: CircularProgressIndicator(color: fg))
         : _error != null
-            ? Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: fg)),
-                      const SizedBox(height: 16),
-                      FilledButton(onPressed: () => _loadToc(force: true), child: const Text('重试')),
-                    ],
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _error!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: fg),
                   ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: () => _loadToc(force: true),
+                    child: const Text('重试'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _menuVisible = !_menuVisible),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: _scrollMode
+                      ? SafeArea(child: _buildScrollReader(fg, settings))
+                      : _buildPagedReader(bg, fg, settings),
                 ),
-              )
-            : GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => setState(() => _menuVisible = !_menuVisible),
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: SafeArea(
-                        child: _scrollMode ? _buildScrollReader(fg, settings) : _buildPagedReader(bg, fg, settings),
-                      ),
-                    ),
-                    if (_menuVisible) _buildTopBar(bg, fg),
-                    if (_menuVisible) _buildBottomBar(bg, fg, settings),
-                  ],
-                ),
-              );
+                if (_menuVisible) _buildTopBar(bg, fg),
+                if (_menuVisible) _buildBottomBar(bg, fg, settings),
+              ],
+            ),
+          );
 
     return Scaffold(
       backgroundColor: bg,
@@ -499,7 +556,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
           if (settings.brightness < 1.0)
             Positioned.fill(
               child: IgnorePointer(
-                child: Container(color: Colors.black.withValues(alpha: (1 - settings.brightness) * 0.85)),
+                child: Container(
+                  color: Colors.black.withValues(
+                    alpha: (1 - settings.brightness) * 0.85,
+                  ),
+                ),
               ),
             ),
           if (settings.eyeProtect)
@@ -529,11 +590,18 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               padding: const EdgeInsets.all(24),
               child: Center(
                 child: _lastLoadedChapter + 1 >= _chapters.length
-                    ? Text('已读到目录末尾', style: TextStyle(color: fg.withValues(alpha: 0.6)))
+                    ? Text(
+                        '已读到目录末尾',
+                        style: TextStyle(color: fg.withValues(alpha: 0.6)),
+                      )
                     : SizedBox(
                         width: 22,
                         height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: fg.withValues(alpha: 0.5))),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: fg.withValues(alpha: 0.5),
+                        ),
+                      ),
               ),
             );
           }
@@ -545,12 +613,22 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               if (isFirst)
                 Padding(
                   padding: EdgeInsets.fromLTRB(0, i == 0 ? 0 : 32, 0, 16),
-                  child: Text(_chapters[chapterIdx].title,
-                      style: TextStyle(color: fg, fontSize: settings.fontSize + 4, fontWeight: FontWeight.bold)),
+                  child: Text(
+                    _chapters[chapterIdx].title,
+                    style: TextStyle(
+                      color: fg,
+                      fontSize: settings.fontSize + 4,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
               Text(
                 _paragraphs[i],
-                style: TextStyle(color: fg, fontSize: settings.fontSize, height: settings.lineHeight),
+                style: TextStyle(
+                  color: fg,
+                  fontSize: settings.fontSize,
+                  height: settings.lineHeight,
+                ),
               ),
               SizedBox(height: settings.fontSize * 0.7),
             ],
@@ -560,213 +638,328 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     );
   }
 
+  // 翻页动画铺满整屏，只有正文内缩：卷页若发生在内缩后的框里，会被裁成屏幕
+  // 中间一小块、上下留空。文字额外让开状态栏/导航条，保证不压到系统 UI。
+  static const EdgeInsets _kTextPad = EdgeInsets.fromLTRB(22, 28, 22, 30);
+
   Widget _buildPagedReader(Color bg, Color fg, ReaderSettings settings) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 48, 24, 48),
-      child: _chapterParagraphs.isEmpty
-          ? Center(child: Text('加载中…', style: TextStyle(color: fg)))
-          : LayoutBuilder(
-              key: ValueKey('${settings.fontSize}|${settings.lineHeight}'),
-              builder: (context, constraints) {
-                final pages = _paginate(chapterParagraphs: _chapterParagraphs, constraints: constraints, settings: settings);
-                if (_pendingLastPage) {
-                  _readPage = pages.isEmpty ? 0 : pages.length - 1;
-                  _pendingLastPage = false;
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) setState(() {});
-                  });
-                }
-                if (_restoreRatio != null && _currentChapter == _restoreChapter) {
-                  _readPage = (_restoreRatio! * (pages.length - 1)).round().clamp(0, pages.length - 1);
-                  _restoreRatio = null;
-                  // LayoutBuilder 在 layout 阶段执行，底部进度条 build 时读到的是旧 _progress，补一次重建
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) setState(() {});
-                  });
-                }
-                if (_readPage >= pages.length) _readPage = pages.length - 1;
-                _pagesTotal = pages.length;
-                _progress = pages.length <= 1
-                    ? 0.0
-                    : (_readPage / (pages.length - 1)).clamp(0.0, 1.0);
-                _progressChapter = _currentChapter;
-                return GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onHorizontalDragStart: (d) {
-                    _dragAccum = 0;
-                    if (_turnCtrl.isAnimating) {
-                      _dragTurnActive = false;
-                      _turnCtrl.stop();
-                      setState(() => _turnFrom = null);
-                    }
-                  },
-                  onHorizontalDragUpdate: (d) {
-                    if (_menuVisible || settings.pageAnimIndex == 4) return;
-                    _dragAccum += d.primaryDelta ?? 0;
-                    if (!_dragTurnActive) {
-                      if (_dragAccum.abs() < 12) return;
-                      final dir = _dragAccum < 0 ? 1 : -1;
-                      final target = _readPage + dir;
-                      if (target < 0 || target >= pages.length) return;
-                      setState(() {
-                        _turnFrom = (
-                          text: pages[_readPage],
-                          pageNo: _readPage + 1,
-                          total: pages.length,
-                          showTitle: _readPage == 0
-                        );
-                        _turnDir = dir;
-                        _readPage = target;
-                        _dragTurnActive = true;
-                      });
-                    }
-                    final frac = (_dragAccum.abs() / constraints.maxWidth).clamp(0.0, 0.999);
-                    _turnCtrl.value = math.max(frac, 0.01);
-                  },
-                  onHorizontalDragEnd: (d) {
-                    if (_menuVisible) return;
-                    final v = d.primaryVelocity ?? 0;
-                    if (_dragTurnActive) {
-                      final val = _turnCtrl.value;
-                      // 甩速与翻页同向为正，投影最终位置决定继续翻还是回弹
-                      final fling = -v * _turnDir;
-                      final projected = val + fling / 4000;
-                      if (projected > 0.5) {
-                        final remain = (1 - val).clamp(0.05, 1.0);
-                        _turnCtrl.animateTo(1,
-                            duration: Duration(milliseconds: (260 * remain).round().clamp(90, 260)),
-                            curve: Curves.easeOutCubic);
-                      } else {
-                        _turnCtrl.animateTo(0,
-                            duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
-                      }
-                      return;
-                    }
-                    // 章边界/无动画模式下拖拽未激活：按甩速或位移判定翻页，
-                    // 慢速拖到底再松手（甩速≈0）也要能翻章
-                    final crossed = _dragAccum.abs() > constraints.maxWidth * 0.35;
-                    if (v < -200 || (crossed && _dragAccum < 0)) _pagedTurn(pages, 1);
-                    if (v > 200 || (crossed && _dragAccum > 0)) _pagedTurn(pages, -1);
-                  },
-                  onHorizontalDragCancel: () {
-                    // 手势被系统打断（返回手势/下拉栏）时回弹，避免页面卡在半翻状态
-                    if (_dragTurnActive && _turnCtrl.value > 0) {
-                      _turnCtrl.animateTo(0,
-                          duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
-                    }
-                  },
-                  onTapUp: (d) {
-                    // 菜单/功能栏打开时点击只关闭菜单，不翻页
-                    if (_menuVisible) {
-                      setState(() => _menuVisible = false);
-                      return;
-                    }
-                    final w = constraints.maxWidth;
-                    if (d.localPosition.dx < w / 3) {
-                      _pagedTurn(pages, -1);
-                    } else if (d.localPosition.dx > w * 2 / 3) {
-                      _pagedTurn(pages, 1);
+    return _chapterParagraphs.isEmpty
+        ? Center(
+            child: Text('加载中…', style: TextStyle(color: fg)),
+          )
+        : LayoutBuilder(
+            key: ValueKey('${settings.fontSize}|${settings.lineHeight}'),
+            builder: (context, constraints) {
+              final viewPad = MediaQuery.viewPaddingOf(context);
+              final pad = EdgeInsets.fromLTRB(
+                _kTextPad.left + viewPad.left,
+                _kTextPad.top + viewPad.top,
+                _kTextPad.right + viewPad.right,
+                _kTextPad.bottom + viewPad.bottom,
+              );
+              final textConstraints = BoxConstraints(
+                maxWidth: math.max(1.0, constraints.maxWidth - pad.horizontal),
+                maxHeight: math.max(1.0, constraints.maxHeight - pad.vertical),
+              );
+              final pages = _paginate(
+                chapterParagraphs: _chapterParagraphs,
+                constraints: textConstraints,
+                settings: settings,
+              );
+              Widget page(String text, int pageNo, int total, bool showTitle) =>
+                  ColoredBox(
+                    color: bg,
+                    child: Padding(
+                      padding: pad,
+                      child: _pageView(
+                        text,
+                        pageNo,
+                        total,
+                        showTitle,
+                        fg,
+                        settings,
+                      ),
+                    ),
+                  );
+              if (_pendingLastPage) {
+                _readPage = pages.isEmpty ? 0 : pages.length - 1;
+                _pendingLastPage = false;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() {});
+                });
+              }
+              if (_restoreRatio != null && _currentChapter == _restoreChapter) {
+                _readPage = (_restoreRatio! * (pages.length - 1)).round().clamp(
+                  0,
+                  pages.length - 1,
+                );
+                _restoreRatio = null;
+                // LayoutBuilder 在 layout 阶段执行，底部进度条 build 时读到的是旧 _progress，补一次重建
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() {});
+                });
+              }
+              if (_readPage >= pages.length) _readPage = pages.length - 1;
+              _pagesTotal = pages.length;
+              _progress = pages.length <= 1
+                  ? 0.0
+                  : (_readPage / (pages.length - 1)).clamp(0.0, 1.0);
+              _progressChapter = _currentChapter;
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart: (d) {
+                  _dragAccum = 0;
+                  if (_turnCtrl.isAnimating) {
+                    _dragTurnActive = false;
+                    _turnCtrl.stop();
+                    setState(() => _turnFrom = null);
+                  }
+                },
+                onHorizontalDragUpdate: (d) {
+                  if (_menuVisible || settings.pageAnimIndex == 4) return;
+                  _dragAccum += d.primaryDelta ?? 0;
+                  if (!_dragTurnActive) {
+                    if (_dragAccum.abs() < 12) return;
+                    final dir = _dragAccum < 0 ? 1 : -1;
+                    final target = _readPage + dir;
+                    if (target < 0 || target >= pages.length) return;
+                    // 仿真卷页需在切页前抓取当前页位图；其它模式释放避免持有大图
+                    if (settings.pageAnimIndex == 0) {
+                      _captureTurnImage();
                     } else {
-                      setState(() => _menuVisible = !_menuVisible);
+                      _releaseTurnImage();
                     }
-                  },
-                  child: ClipRect(
-                    child: _turnFrom == null
-                        ? _pageView(pages[_readPage], _readPage + 1, pages.length, _readPage == 0, fg, settings)
-                        : AnimatedBuilder(
-                            animation: _turnCtrl,
-                            builder: (context, _) {
-                              final t = _turnCtrl.value;
-                              final w = constraints.maxWidth;
-                              final dir = _turnDir;
-                              final from = _turnFrom!;
-                              final newPage = _pageView(
-                                  pages[_readPage], _readPage + 1, pages.length, _readPage == 0, fg, settings);
-                              final oldPage =
-                                  _pageView(from.text, from.pageNo, from.total, from.showTitle, fg, settings);
-                              // 动画期间给每页垫不透明底色，防止新旧页文字互相透出叠影
-                              Widget mask(Widget c) => ColoredBox(color: bg, child: c);
-                              Widget slideIn(Widget child, double dx) =>
-                                  Transform.translate(offset: Offset(dx, 0), child: child);
-                              Widget slideOut(Widget child, double dx) =>
-                                  Transform.translate(offset: Offset(dx, 0), child: child);
-                              switch (settings.pageAnimIndex) {
-                                case 1:
-                                  // 覆盖：旧页轻微视差退让并压暗，新页盖上来
-                                  return Stack(children: [
+                    setState(() {
+                      _turnFrom = (
+                        text: pages[_readPage],
+                        pageNo: _readPage + 1,
+                        total: pages.length,
+                        showTitle: _readPage == 0,
+                      );
+                      _turnDir = dir;
+                      _readPage = target;
+                      _dragTurnActive = true;
+                    });
+                  }
+                  final frac = (_dragAccum.abs() / constraints.maxWidth).clamp(
+                    0.0,
+                    0.999,
+                  );
+                  _turnCtrl.value = math.max(frac, 0.01);
+                },
+                onHorizontalDragEnd: (d) {
+                  if (_menuVisible) return;
+                  final v = d.primaryVelocity ?? 0;
+                  if (_dragTurnActive) {
+                    final val = _turnCtrl.value;
+                    // 甩速与翻页同向为正，投影最终位置决定继续翻还是回弹
+                    final fling = -v * _turnDir;
+                    final projected = val + fling / 4000;
+                    if (projected > 0.5) {
+                      final remain = (1 - val).clamp(0.05, 1.0);
+                      _turnCtrl.animateTo(
+                        1,
+                        duration: Duration(
+                          milliseconds: (260 * remain).round().clamp(90, 260),
+                        ),
+                        curve: Curves.easeOutCubic,
+                      );
+                    } else {
+                      _turnCtrl.animateTo(
+                        0,
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOutCubic,
+                      );
+                    }
+                    return;
+                  }
+                  // 章边界/无动画模式下拖拽未激活：按甩速或位移判定翻页，
+                  // 慢速拖到底再松手（甩速≈0）也要能翻章
+                  final crossed =
+                      _dragAccum.abs() > constraints.maxWidth * 0.35;
+                  if (v < -200 || (crossed && _dragAccum < 0)) {
+                    _pagedTurn(pages, 1);
+                  }
+                  if (v > 200 || (crossed && _dragAccum > 0)) {
+                    _pagedTurn(pages, -1);
+                  }
+                },
+                onHorizontalDragCancel: () {
+                  // 手势被系统打断（返回手势/下拉栏）时回弹，避免页面卡在半翻状态
+                  if (_dragTurnActive && _turnCtrl.value > 0) {
+                    _turnCtrl.animateTo(
+                      0,
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                    );
+                  }
+                },
+                onTapUp: (d) {
+                  // 菜单/功能栏打开时点击只关闭菜单，不翻页
+                  if (_menuVisible) {
+                    setState(() => _menuVisible = false);
+                    return;
+                  }
+                  final w = constraints.maxWidth;
+                  if (d.localPosition.dx < w / 3) {
+                    _pagedTurn(pages, -1);
+                  } else if (d.localPosition.dx > w * 2 / 3) {
+                    _pagedTurn(pages, 1);
+                  } else {
+                    setState(() => _menuVisible = !_menuVisible);
+                  }
+                },
+                child: ClipRect(
+                  child: _turnFrom == null
+                      ? RepaintBoundary(
+                          key: _pageKey,
+                          child: page(
+                            pages[_readPage],
+                            _readPage + 1,
+                            pages.length,
+                            _readPage == 0,
+                          ),
+                        )
+                      : AnimatedBuilder(
+                          animation: _turnCtrl,
+                          builder: (context, _) {
+                            final t = _turnCtrl.value;
+                            final w = constraints.maxWidth;
+                            final dir = _turnDir;
+                            final from = _turnFrom!;
+                            // page() 自带不透明底色，新旧页叠加时不会互相透出文字叠影
+                            final newPage = page(
+                              pages[_readPage],
+                              _readPage + 1,
+                              pages.length,
+                              _readPage == 0,
+                            );
+                            final oldPage = page(
+                              from.text,
+                              from.pageNo,
+                              from.total,
+                              from.showTitle,
+                            );
+                            Widget slideIn(Widget child, double dx) =>
+                                Transform.translate(
+                                  offset: Offset(dx, 0),
+                                  child: child,
+                                );
+                            Widget slideOut(Widget child, double dx) =>
+                                Transform.translate(
+                                  offset: Offset(dx, 0),
+                                  child: child,
+                                );
+                            switch (settings.pageAnimIndex) {
+                              case 1:
+                                // 覆盖：旧页轻微视差退让并压暗，新页盖上来
+                                return Stack(
+                                  children: [
                                     slideOut(oldPage, -t * w * 0.3 * dir),
                                     Positioned.fill(
                                       child: IgnorePointer(
                                         child: ColoredBox(
-                                            color: Colors.black.withValues(alpha: 0.18 * (1 - t))),
-                                      ),
-                                    ),
-                                    slideIn(mask(newPage), (1 - t) * w * dir),
-                                  ]);
-                                case 2:
-                                  // 平移：新旧页一起移动
-                                  return Stack(children: [
-                                    slideOut(mask(oldPage), -t * w * dir),
-                                    slideIn(mask(newPage), (1 - t) * w * dir),
-                                  ]);
-                                default:
-                                  // 仿真：平移 + 透视旋转 + 边缘阴影近似卷页
-                                  return Stack(children: [
-                                    slideOut(mask(oldPage), -t * w * dir),
-                                    Transform(
-                                      alignment: dir == 1 ? Alignment.centerLeft : Alignment.centerRight,
-                                      transform: Matrix4.identity()
-                                        ..setEntry(3, 2, 0.0012)
-                                        ..translateByDouble((1 - t) * w * dir, 0, 0, 1)
-                                        ..rotateY((1 - t) * 0.35 * (dir == 1 ? -1 : 1)),
-                                      child: mask(newPage),
-                                    ),
-                                    Positioned.fill(
-                                      child: IgnorePointer(
-                                        child: DecoratedBox(
-                                          decoration: BoxDecoration(
-                                            gradient: LinearGradient(
-                                              begin: dir == 1 ? Alignment.centerRight : Alignment.centerLeft,
-                                              end: dir == 1 ? Alignment.centerLeft : Alignment.centerRight,
-                                              colors: [
-                                                Colors.transparent,
-                                                Colors.black.withValues(alpha: 0.28 * (1 - t)),
-                                              ],
-                                            ),
+                                          color: Colors.black.withValues(
+                                            alpha: 0.18 * (1 - t),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ]);
-                              }
-                            },
-                          ),
-                  ),
-                );
-              },
-            ),
-    );
+                                    slideIn(newPage, (1 - t) * w * dir),
+                                  ],
+                                );
+                              case 2:
+                                // 平移：新旧页一起移动
+                                return Stack(
+                                  children: [
+                                    slideOut(oldPage, -t * w * dir),
+                                    slideIn(newPage, (1 - t) * w * dir),
+                                  ],
+                                );
+                              default:
+                                // 仿真卷页：卷起页=刚离开的那页（起翻时抓的位图），
+                                // 下方露出=目标页；抓帧失败则回退到透视 hinge。
+                                final img = _turnImage;
+                                if (img == null) {
+                                  final theta =
+                                      (dir == 1 ? (1 - t) : t) * (math.pi / 2);
+                                  return Stack(
+                                    children: [
+                                      Positioned.fill(
+                                        child: dir == 1 ? newPage : oldPage,
+                                      ),
+                                      Positioned.fill(
+                                        child: Transform(
+                                          alignment: Alignment.centerLeft,
+                                          transform: Matrix4.identity()
+                                            ..setEntry(3, 2, 0.0015)
+                                            ..rotateY(theta - math.pi / 2),
+                                          child: dir == 1 ? oldPage : newPage,
+                                        ),
+                                      ),
+                                    ],
+                                  );
+                                }
+                                return PageCurl(
+                                  curlingImage: img,
+                                  revealed: newPage,
+                                  progress: t,
+                                  forward: dir == 1,
+                                  background: bg,
+                                  pixelRatio: MediaQuery.devicePixelRatioOf(
+                                    context,
+                                  ),
+                                );
+                            }
+                          },
+                        ),
+                ),
+              );
+            },
+          );
   }
 
-  Widget _pageView(String text, int pageNo, int total, bool showTitle, Color fg, ReaderSettings settings) {
+  Widget _pageView(
+    String text,
+    int pageNo,
+    int total,
+    bool showTitle,
+    Color fg,
+    ReaderSettings settings,
+  ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (showTitle) ...[
-          Text(_chapters[_currentChapter].title,
-              style: TextStyle(color: fg, fontSize: settings.fontSize + 4, fontWeight: FontWeight.bold)),
+          Text(
+            _chapters[_currentChapter].title,
+            style: TextStyle(
+              color: fg,
+              fontSize: settings.fontSize + 4,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
           SizedBox(height: settings.fontSize),
         ],
         Expanded(
           child: SingleChildScrollView(
             physics: const NeverScrollableScrollPhysics(),
-            child: Text(text, style: TextStyle(fontSize: settings.fontSize, height: settings.lineHeight, color: fg)),
+            child: Text(
+              text,
+              style: TextStyle(
+                fontSize: settings.fontSize,
+                height: settings.lineHeight,
+                color: fg,
+              ),
+            ),
           ),
         ),
         Align(
           alignment: Alignment.centerRight,
-          child: Text('$pageNo/$total',
-              style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12)),
+          child: Text(
+            '$pageNo/$total',
+            style: TextStyle(color: fg.withValues(alpha: 0.5), fontSize: 12),
+          ),
         ),
       ],
     );
@@ -790,18 +983,33 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
       return;
     }
     // 动画未播完又翻页：立即结束上一次动画，直接落到新页，避免两页文字叠影
-    final noAnim = (_lastSettings?.pageAnimIndex ?? 0) == 4 || _turnCtrl.isAnimating;
+    final noAnim =
+        (_lastSettings?.pageAnimIndex ?? 0) == 4 || _turnCtrl.isAnimating;
     if (noAnim) {
       _stopTurnAnim();
       setState(() => _readPage = target);
       return;
     }
+    if ((_lastSettings?.pageAnimIndex ?? 0) == 0) {
+      _captureTurnImage();
+    } else {
+      _releaseTurnImage();
+    }
     setState(() {
-      _turnFrom = (text: pages[_readPage], pageNo: _readPage + 1, total: pages.length, showTitle: _readPage == 0);
+      _turnFrom = (
+        text: pages[_readPage],
+        pageNo: _readPage + 1,
+        total: pages.length,
+        showTitle: _readPage == 0,
+      );
       _turnDir = dir;
       _readPage = target;
     });
-    _turnCtrl.animateTo(1, duration: const Duration(milliseconds: 320), curve: Curves.easeInOutCubic);
+    _turnCtrl.animateTo(
+      1,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeInOutCubic,
+    );
   }
 
   void _stopTurnAnim() {
@@ -809,6 +1017,26 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     if (_turnCtrl.isAnimating) _turnCtrl.stop();
     _turnFrom = null;
     _turnCtrl.value = 0;
+    _releaseTurnImage();
+  }
+
+  /// 手势/点击起翻时把当前页同步抓成位图，作为卷起的上层页；抓帧失败置空回退到 hinge。
+  void _captureTurnImage() {
+    try {
+      final ro = _pageKey.currentContext?.findRenderObject();
+      if (ro is RenderRepaintBoundary) {
+        final dpr = MediaQuery.devicePixelRatioOf(context);
+        _turnImage?.dispose();
+        _turnImage = ro.toImageSync(pixelRatio: dpr);
+        return;
+      }
+    } catch (_) {}
+    _releaseTurnImage();
+  }
+
+  void _releaseTurnImage() {
+    _turnImage?.dispose();
+    _turnImage = null;
   }
 
   // _paginate 记忆化：段落列表 / 字号 / 行距 / 页面尺寸任一变化才重算
@@ -831,7 +1059,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     }
     final pageWidth = constraints.maxWidth;
     final pageHeight = constraints.maxHeight - settings.fontSize * 1.2 - 4;
-    final style = TextStyle(fontSize: settings.fontSize, height: settings.lineHeight);
+    final style = TextStyle(
+      fontSize: settings.fontSize,
+      height: settings.lineHeight,
+    );
     final pages = <String>[];
     var current = <String>[];
     // 章标题只占首页顶部空间
@@ -840,8 +1071,11 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
     final sepH = settings.fontSize * settings.lineHeight;
 
     double paraHeight(String p) {
-      final tp = TextPainter(text: TextSpan(text: p, style: style), maxLines: null, textDirection: TextDirection.ltr)
-        ..layout(maxWidth: pageWidth);
+      final tp = TextPainter(
+        text: TextSpan(text: p, style: style),
+        maxLines: null,
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: pageWidth);
       final h = tp.height;
       tp.dispose();
       return h;
@@ -849,14 +1083,20 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
 
     // 单段高度超过一页时按页高切片，否则固定高度页会裁掉尾部（整章只有一段的书源常见）
     // chunkMax 预留首页章标题空间，保证每片落在任何一页都不溢出
-    final chunkMax = math.max(pageHeight - settings.fontSize * 2.5, settings.fontSize * 2);
+    final chunkMax = math.max(
+      pageHeight - settings.fontSize * 2.5,
+      settings.fontSize * 2,
+    );
     List<String> splitOversized(String p) {
       final out = <String>[];
       var remaining = p;
       var guard = 0;
       while (remaining.isNotEmpty && guard++ < 5000) {
-        final tp = TextPainter(text: TextSpan(text: remaining, style: style), maxLines: null, textDirection: TextDirection.ltr)
-          ..layout(maxWidth: pageWidth);
+        final tp = TextPainter(
+          text: TextSpan(text: remaining, style: style),
+          maxLines: null,
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: pageWidth);
         if (tp.height <= chunkMax) {
           tp.dispose();
           out.add(remaining);
@@ -918,7 +1158,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
         padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
         child: Row(
           children: [
-            IconButton(icon: Icon(Icons.arrow_back, color: fg), onPressed: () => Navigator.of(context).pop()),
+            IconButton(
+              icon: Icon(Icons.arrow_back, color: fg),
+              onPressed: () => Navigator.of(context).pop(),
+            ),
             Expanded(
               child: Text(
                 '${widget.book['name'] ?? ''}${(widget.book['author'] ?? '').toString().isNotEmpty ? ' · ${widget.book['author']}' : ''}',
@@ -928,11 +1171,18 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               ),
             ),
             IconButton(
-              icon: Icon(_inShelf ? Icons.bookmark_added : Icons.bookmark_add_outlined, color: fg),
+              icon: Icon(
+                _inShelf ? Icons.bookmark_added : Icons.bookmark_add_outlined,
+                color: fg,
+              ),
               tooltip: _inShelf ? '移出书架' : '加入书架',
               onPressed: _toggleShelf,
             ),
-            IconButton(icon: Icon(Icons.list, color: fg), tooltip: '目录', onPressed: _showTocSheet),
+            IconButton(
+              icon: Icon(Icons.list, color: fg),
+              tooltip: '目录',
+              onPressed: _showTocSheet,
+            ),
           ],
         ),
       ),
@@ -940,34 +1190,48 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
   }
 
   bool get _inShelf {
-    final key = widget.book['key']?.toString() ??
-        StorageService.bookKey('${widget.book['name'] ?? ''}', '${widget.book['author'] ?? ''}',
-            '${widget.book['sourceUrl'] ?? ''}');
+    final key =
+        widget.book['key']?.toString() ??
+        StorageService.bookKey(
+          '${widget.book['name'] ?? ''}',
+          '${widget.book['author'] ?? ''}',
+          '${widget.book['sourceUrl'] ?? ''}',
+        );
     return _shelf.byKey(key) != null;
   }
 
   Future<void> _toggleShelf() async {
     if (_inShelf) {
-      final key = widget.book['key']?.toString() ??
-          StorageService.bookKey('${widget.book['name'] ?? ''}', '${widget.book['author'] ?? ''}',
-              '${widget.book['sourceUrl'] ?? ''}');
+      final key =
+          widget.book['key']?.toString() ??
+          StorageService.bookKey(
+            '${widget.book['name'] ?? ''}',
+            '${widget.book['author'] ?? ''}',
+            '${widget.book['sourceUrl'] ?? ''}',
+          );
       await _shelf.remove(key);
       if (!mounted) return;
       setState(() {});
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('已移出书架，进度保留在浏览记录')));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已移出书架，进度保留在浏览记录')));
       return;
     }
-    final added = await _shelf.addFromReader(Map<String, dynamic>.of(widget.book));
+    final added = await _shelf.addFromReader(
+      Map<String, dynamic>.of(widget.book),
+    );
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(added ? '已加入书架' : '加入书架失败：书信息不完整')));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(added ? '已加入书架' : '加入书架失败：书信息不完整')));
   }
 
   Widget _buildBottomBar(Color bg, Color fg, ReaderSettings settings) {
     final shownChapter = _scrollMode ? _visibleChapter() : _currentChapter;
-    final chapterTitle = _chapters.isEmpty ? '' : _chapters[shownChapter.clamp(0, _chapters.length - 1)].title;
+    final chapterTitle = _chapters.isEmpty
+        ? ''
+        : _chapters[shownChapter.clamp(0, _chapters.length - 1)].title;
     final isNight = settings.theme.name == '夜间';
     return Positioned(
       bottom: 0,
@@ -984,8 +1248,13 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
               child: Row(
                 children: [
                   TextButton(
-                    onPressed: shownChapter > 0 ? () => _jumpToChapter(shownChapter - 1) : null,
-                    child: Text('上一章', style: TextStyle(color: fg, fontSize: 13)),
+                    onPressed: shownChapter > 0
+                        ? () => _jumpToChapter(shownChapter - 1)
+                        : null,
+                    child: Text(
+                      '上一章',
+                      style: TextStyle(color: fg, fontSize: 13),
+                    ),
                   ),
                   Expanded(
                     child: Slider(
@@ -993,7 +1262,9 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                       onChanged: (v) {
                         if (_scrollMode) {
                           if (_scrollController.hasClients) {
-                            _scrollController.jumpTo(v * _scrollController.position.maxScrollExtent);
+                            _scrollController.jumpTo(
+                              v * _scrollController.position.maxScrollExtent,
+                            );
                           }
                           setState(() => _progress = v);
                         } else {
@@ -1001,7 +1272,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                           setState(() {
                             _readPage = (_pagesTotal <= 1)
                                 ? 0
-                                : (v * (_pagesTotal - 1)).round().clamp(0, _pagesTotal - 1);
+                                : (v * (_pagesTotal - 1)).round().clamp(
+                                    0,
+                                    _pagesTotal - 1,
+                                  );
                             _progress = v;
                           });
                         }
@@ -1012,7 +1286,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                     onPressed: shownChapter + 1 < _chapters.length
                         ? () => _jumpToChapter(shownChapter + 1)
                         : null,
-                    child: Text('下一章', style: TextStyle(color: fg, fontSize: 13)),
+                    child: Text(
+                      '下一章',
+                      style: TextStyle(color: fg, fontSize: 13),
+                    ),
                   ),
                 ],
               ),
@@ -1026,10 +1303,16 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                   onPressed: _showTocSheet,
                 ),
                 TextButton.icon(
-                  icon: Icon(isNight ? Icons.light_mode : Icons.dark_mode, color: fg, size: 18),
+                  icon: Icon(
+                    isNight ? Icons.light_mode : Icons.dark_mode,
+                    color: fg,
+                    size: 18,
+                  ),
                   label: Text('夜间', style: TextStyle(color: fg, fontSize: 13)),
                   onPressed: () {
-                    final nightIdx = ReaderSettings.themes.indexWhere((t) => t.name == '夜间');
+                    final nightIdx = ReaderSettings.themes.indexWhere(
+                      (t) => t.name == '夜间',
+                    );
                     settings.set(themeIndex: isNight ? 0 : nightIdx);
                   },
                 ),
@@ -1042,10 +1325,15 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
             ),
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
-              child: Text(chapterTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: fg.withValues(alpha: 0.6), fontSize: 11)),
+              child: Text(
+                chapterTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: fg.withValues(alpha: 0.6),
+                  fontSize: 11,
+                ),
+              ),
             ),
           ],
         ),
@@ -1069,8 +1357,10 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                     Expanded(
                       child: Padding(
                         padding: const EdgeInsets.only(left: 8),
-                        child: Text('目录（${_chapters.length} 章）',
-                            style: const TextStyle(fontWeight: FontWeight.bold)),
+                        child: Text(
+                          '目录（${_chapters.length} 章）',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ),
                     TextButton.icon(
@@ -1087,8 +1377,14 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                   itemCount: _chapters.length,
                   itemBuilder: (_, i) => ListTile(
                     dense: true,
-                    selected: i == (_scrollMode ? _visibleChapter() : _currentChapter),
-                    title: Text(_chapters[i].title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                    selected:
+                        i ==
+                        (_scrollMode ? _visibleChapter() : _currentChapter),
+                    title: Text(
+                      _chapters[i].title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                     onTap: () {
                       Navigator.pop(ctx);
                       _jumpToChapter(i);
@@ -1116,9 +1412,12 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
           }
 
           Widget label(String text) => SizedBox(
-                width: 44,
-                child: Text(text, style: TextStyle(color: Colors.grey.shade600, fontSize: 13)),
-              );
+            width: 44,
+            child: Text(
+              text,
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
+            ),
+          );
 
           return SafeArea(
             child: Padding(
@@ -1134,14 +1433,21 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                           value: settings.brightness,
                           min: 0.3,
                           max: 1.0,
-                          onChanged: (v) => apply(() => settings.set(brightness: v)),
+                          onChanged: (v) =>
+                              apply(() => settings.set(brightness: v)),
                         ),
                       ),
                       IconButton(
-                        icon: Icon(Icons.visibility_outlined,
-                            color: settings.eyeProtect ? const Color(0xFF2E7D5B) : Colors.grey.shade600),
+                        icon: Icon(
+                          Icons.visibility_outlined,
+                          color: settings.eyeProtect
+                              ? const Color(0xFF2E7D5B)
+                              : Colors.grey.shade600,
+                        ),
                         tooltip: '护眼模式',
-                        onPressed: () => apply(() => settings.set(eyeProtect: !settings.eyeProtect)),
+                        onPressed: () => apply(
+                          () => settings.set(eyeProtect: !settings.eyeProtect),
+                        ),
                       ),
                       const SizedBox(width: 4),
                     ],
@@ -1152,17 +1458,28 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                       IconButton(
                         icon: const Icon(Icons.text_decrease),
                         onPressed: settings.fontSize > 14
-                            ? () => apply(() => settings.set(fontSize: settings.fontSize - 1))
+                            ? () => apply(
+                                () => settings.set(
+                                  fontSize: settings.fontSize - 1,
+                                ),
+                              )
                             : null,
                       ),
                       SizedBox(
                         width: 40,
-                        child: Text('${settings.fontSize.round()}', textAlign: TextAlign.center),
+                        child: Text(
+                          '${settings.fontSize.round()}',
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                       IconButton(
                         icon: const Icon(Icons.text_increase),
                         onPressed: settings.fontSize < 32
-                            ? () => apply(() => settings.set(fontSize: settings.fontSize + 1))
+                            ? () => apply(
+                                () => settings.set(
+                                  fontSize: settings.fontSize + 1,
+                                ),
+                              )
                             : null,
                       ),
                     ],
@@ -1176,7 +1493,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 6),
                           child: GestureDetector(
-                            onTap: () => apply(() => settings.set(themeIndex: i)),
+                            onTap: () =>
+                                apply(() => settings.set(themeIndex: i)),
                             child: Container(
                               width: 38,
                               height: 38,
@@ -1191,9 +1509,13 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                                 ),
                               ),
                               child: Center(
-                                child: Text('文',
-                                    style: TextStyle(
-                                        color: Color(ReaderSettings.themes[i].fg), fontSize: 15)),
+                                child: Text(
+                                  '文',
+                                  style: TextStyle(
+                                    color: Color(ReaderSettings.themes[i].fg),
+                                    fontSize: 15,
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -1210,13 +1532,19 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                           spacing: 8,
                           runSpacing: 6,
                           children: [
-                            for (var i = 0; i < ReaderSettings.pageAnims.length; i++)
+                            for (
+                              var i = 0;
+                              i < ReaderSettings.pageAnims.length;
+                              i++
+                            )
                               ChoiceChip(
                                 visualDensity: VisualDensity.compact,
                                 label: Text(ReaderSettings.pageAnims[i]),
                                 selected: settings.pageAnimIndex == i,
                                 onSelected: (_) {
-                                  _progressChapter = _scrollMode ? _visibleChapter() : _currentChapter;
+                                  _progressChapter = _scrollMode
+                                      ? _visibleChapter()
+                                      : _currentChapter;
                                   _currentChapter = _progressChapter;
                                   apply(() => settings.set(pageAnimIndex: i));
                                 },
@@ -1236,7 +1564,8 @@ class _ReaderPageState extends State<ReaderPage> with SingleTickerProviderStateM
                           max: 2.4,
                           divisions: 12,
                           label: settings.lineHeight.toStringAsFixed(1),
-                          onChanged: (v) => apply(() => settings.set(lineHeight: v)),
+                          onChanged: (v) =>
+                              apply(() => settings.set(lineHeight: v)),
                         ),
                       ),
                     ],
