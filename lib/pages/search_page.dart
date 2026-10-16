@@ -242,12 +242,13 @@ class _SearchPageState extends State<SearchPage> {
                       name: h.book.name,
                       author: h.book.author,
                       coverUrl: h.book.coverUrl,
+                      // 源名放最前：点开后详情/正文规则都取自它，被截断就选错源了
                       subtitle: [
-                        if (h.book.kind.isNotEmpty) h.book.kind,
-                        if (h.book.lastChapter.isNotEmpty) h.book.lastChapter,
                         h.dupes > 0
                             ? '${h.source.bookSourceName} +${h.dupes} 源'
                             : h.source.bookSourceName,
+                        if (h.book.kind.isNotEmpty) h.book.kind,
+                        if (h.book.lastChapter.isNotEmpty) h.book.lastChapter,
                       ].join(' · '),
                       progress: h.book.intro,
                       onTap: () => Navigator.of(context).push(MaterialPageRoute(
