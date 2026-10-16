@@ -1,0 +1,201 @@
+name: 手动构建 APK
+
+# Actions 页 → "Run workflow" 手动触发，产物直接挂到 GitHub Release 供下载。
+# 没配签名 secret 时不会失败：android/app/build.gradle.kts 在缺少 key.properties
+# 时自动回退 debug 签名，Release 说明里会标明签名方式（debug 包无法覆盖升级正式版）。
+#
+# release_tag 留空时复用滚动标签 manual-latest，每次运行覆盖旧包，不会堆一堆标签；
+# 填了具体标签（如 v0.2.0-test1）则新建/更新该 Release，gh 会顺手创建同名 git 标签。
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '挂到哪个 Release（留空 = 滚动标签 manual-latest，每次覆盖）'
+        required: false
+        type: string
+        default: ''
+      bundles:
+        description: '打包组合：1 = arm64+armv7+通用，2 = 仅 arm64+armv7，3 = 再加 x86_64'
+        required: true
+        type: choice
+        options: ['1', '2', '3']
+        default: '1'
+      obfuscate:
+        description: '混淆 Dart 符号（关掉便于直接对照崩溃栈，不必 symbolize）'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      prerelease:
+        description: '标记为预发布版本'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: manual-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析构建参数
+        id: vars
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          raw="$(grep -m1 '^version:' pubspec.yaml | awk '{print $2}')"   # 0.1.0+1
+          name="${raw%%+*}"
+          sha="${GITHUB_SHA::7}"
+          tag="$RELEASE_TAG"
+          [ -n "$tag" ] || tag="manual-latest"
+          {
+            echo "app_version=$name"
+            echo "short_sha=$sha"
+            echo "tag=$tag"
+            echo "signed=$([ -n "$KEYSTORE_BASE64" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 还原 keystore 并写 key.properties
+        if: steps.vars.outputs.signed == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keystore"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/xunyuan-release.jks"
+          cat > android/key.properties <<EOF
+          storeFile=$RUNNER_TEMP/keystore/xunyuan-release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          cache: true
+
+      - run: flutter pub get
+
+      - name: 构建 split APK
+        run: |
+          args="--release --split-per-abi"
+          if [ "${{ inputs.obfuscate }}" = "true" ]; then
+            args="$args --obfuscate --split-debug-info=build/symbols-split"
+          fi
+          flutter build apk $args
+
+      - name: 构建通用 APK
+        if: inputs.bundles == '1' || inputs.bundles == '3'
+        run: |
+          args="--release"
+          if [ "${{ inputs.obfuscate }}" = "true" ]; then
+            # 每次 --obfuscate 都会重新取随机种子，两次构建的符号表不通用，必须分目录存
+            args="$args --obfuscate --split-debug-info=build/symbols-universal"
+          fi
+          flutter build apk $args
+
+      - name: 整理产物文件名
+        env:
+          BUNDLES: ${{ inputs.bundles }}
+          V: ${{ steps.vars.outputs.app_version }}
+          SHA: ${{ steps.vars.outputs.short_sha }}
+        run: |
+          cd build/app/outputs/flutter-apk
+          out="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$out"
+          cp app-arm64-v8a-release.apk  "$out/寻源_v${V}-${SHA}_arm64.apk"
+          cp app-armeabi-v7a-release.apk "$out/寻源_v${V}-${SHA}_armv7.apk"
+          case "$BUNDLES" in
+            1) cp app-release.apk "$out/寻源_v${V}-${SHA}_universal.apk" ;;
+            3) cp app-x86_64-release.apk "$out/寻源_v${V}-${SHA}_x86_64.apk"
+               cp app-release.apk "$out/寻源_v${V}-${SHA}_universal.apk" ;;
+          esac
+          ls -la "$out"
+
+      - name: 写 Release 说明
+        env:
+          SIGNED: ${{ steps.vars.outputs.signed }}
+          V: ${{ steps.vars.outputs.app_version }}
+          SHA: ${{ steps.vars.outputs.short_sha }}
+          BUNDLES: ${{ inputs.bundles }}
+          OBF: ${{ inputs.obfuscate }}
+        run: |
+          if [ "$SIGNED" = "true" ]; then
+            sign="✅ 正式签名（dingshuo / CN=寻源）——可直接覆盖升级已装的正式版"
+          else
+            sign="⚠️ debug 签名（仓库未配 KEYSTORE_BASE64 secret）——**装之前要先卸载正式版**，否则 INSTALL_FAILED_UPDATE_INCOMPATIBLE，且收不到正式版的升级"
+          fi
+          {
+            echo "手动构建 v${V} · commit \`${SHA}\` · 混淆 \`${OBF}\` · 组合 \`${BUNDLES}\`"
+            echo
+            echo "- 签名：${sign}"
+            echo "- arm64：近年真机（小米/华为/Pixel 等）基本都用这个"
+            echo "- armv7：老机器 / 部分低端机"
+            echo "- universal：任何架构都能装，体积最大"
+            echo "- x86_64：模拟器和 x86 ChromeOS（组合 3 才有）"
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: 发布到 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.vars.outputs.tag }}
+          V: ${{ steps.vars.outputs.app_version }}
+          SHA: ${{ steps.vars.outputs.short_sha }}
+        run: |
+          title="手动构建 v${V} (${SHA})"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$title" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --prerelease="${{ inputs.prerelease }}"
+          else
+            gh release create "$TAG" --title "$title" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --prerelease="${{ inputs.prerelease }}" \
+              --target "$GITHUB_SHA"
+          fi
+          gh release upload "$TAG" dist/*.apk --clobber
+          {
+            echo "### 已发布到 Release"
+            echo
+            echo "<https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}>"
+            echo
+            for f in dist/*.apk; do echo "- $(basename "$f")"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 同时留一份 Actions 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-v${{ steps.vars.outputs.app_version }}-${{ steps.vars.outputs.short_sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      # flutter symbolize --debug-info <解压目录> --app-so <libapp.so> 用来还原混淆崩溃栈
+      - name: 保留混淆符号表
+        if: inputs.obfuscate == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: symbols-v${{ steps.vars.outputs.app_version }}-${{ steps.vars.outputs.short_sha }}
+          path: build/symbols-*
+          if-no-files-found: warn
+          retention-days: 90
