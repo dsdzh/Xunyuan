@@ -10,6 +10,7 @@ import '../core/book_source_engine.dart';
 import '../models/book_source.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
+import '../widgets/display_scale.dart';
 import '../widgets/page_curl.dart';
 
 class ReaderPage extends StatefulWidget {
@@ -549,28 +550,32 @@ class _ReaderPageState extends State<ReaderPage>
             ),
           );
 
-    return Scaffold(
-      backgroundColor: bg,
-      body: Stack(
-        children: [
-          Positioned.fill(child: content),
-          if (settings.brightness < 1.0)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: Container(
-                  color: Colors.black.withValues(
-                    alpha: (1 - settings.brightness) * 0.85,
+    return ReaderScale(
+      // 阅读页自己的一套缩放：正文、顶栏底栏、翻页动画一起跟着走，
+      // 书架和这些面板用的弹层在根 Navigator 上，不受影响。
+      child: Scaffold(
+        backgroundColor: bg,
+        body: Stack(
+          children: [
+            Positioned.fill(child: content),
+            if (settings.brightness < 1.0)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(
+                    color: Colors.black.withValues(
+                      alpha: (1 - settings.brightness) * 0.85,
+                    ),
                   ),
                 ),
               ),
-            ),
-          if (settings.eyeProtect)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: Container(color: const Color(0x14FF9A3C)),
+            if (settings.eyeProtect)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Container(color: const Color(0x14FF9A3C)),
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1429,8 +1434,31 @@ class _ReaderPageState extends State<ReaderPage>
             ),
           );
 
+          // 面板挂在根 Navigator 上，看到的 MediaQuery 是全局画布；
+          // 要报"阅读页会重排成多宽"得按设备真实宽度算。
+          final realWidth = MediaQueryData.fromView(View.of(ctx)).size.width;
+          final readerDpi = settings.readerDpiScale > 0
+              ? settings.readerDpiScale
+              : settings.dpiScale;
+          final readerScreen = settings.readerScreenWidthDp > 0
+              ? settings.readerScreenWidthDp
+              : settings.screenWidthDp;
+          final followingGlobal =
+              settings.readerDpiScale <= 0 && settings.readerScreenWidthDp <= 0;
+          final screenValue = (readerScreen > 0 ? readerScreen : realWidth).clamp(
+            DisplayScale.minScreenDp,
+            DisplayScale.maxScreenDp,
+          );
+          final target = ReaderScale.targetWidthOf(settings, realWidth);
+          final globalTarget = DisplayScale.canvasWidth(
+            dpi: settings.dpiScale,
+            screenWidthDp: settings.screenWidthDp,
+            realWidth: realWidth,
+          );
+
           return SafeArea(
-            child: Padding(
+            // 缩放档位能加到十几行，全局 DPI 拉高时这面板比屏幕还高，得能滚
+            child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -1579,6 +1607,65 @@ class _ReaderPageState extends State<ReaderPage>
                         ),
                       ),
                     ],
+                  ),
+                  Row(
+                    children: [
+                      label('缩放'),
+                      Expanded(
+                        child: Text(
+                          '阅读画布 ${target.round()} dp'
+                          '${followingGlobal ? '（跟随全局 ${globalTarget.round()}）' : ''}',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => apply(
+                          () => settings.set(
+                            readerDpiScale: 0,
+                            readerScreenWidthDp: 0,
+                          ),
+                        ),
+                        child: const Text('跟随全局'),
+                      ),
+                    ],
+                  ),
+                  SliderRow(
+                    label: '阅读 DPI',
+                    value: '${readerDpi.toStringAsFixed(2)}×',
+                    slider: Slider(
+                      value: readerDpi.clamp(
+                        DisplayScale.minDpi,
+                        DisplayScale.maxDpi,
+                      ),
+                      min: DisplayScale.minDpi,
+                      max: DisplayScale.maxDpi,
+                      divisions: 18,
+                      label: '${readerDpi.toStringAsFixed(2)}×',
+                      onChanged: (v) => apply(
+                        () => settings.set(
+                          readerDpiScale: double.parse(v.toStringAsFixed(2)),
+                        ),
+                      ),
+                    ),
+                  ),
+                  SliderRow(
+                    label: '阅读屏幕',
+                    value: '${screenValue.round()} dp',
+                    slider: Slider(
+                      value: screenValue,
+                      min: DisplayScale.minScreenDp,
+                      max: DisplayScale.maxScreenDp,
+                      divisions: 18,
+                      label: '${screenValue.round()} dp',
+                      onChanged: (v) => apply(
+                        () => settings.set(
+                          readerScreenWidthDp: v.roundToDouble(),
+                        ),
+                      ),
+                    ),
                   ),
                 ],
               ),

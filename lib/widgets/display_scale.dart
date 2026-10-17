@@ -55,21 +55,43 @@ class DisplayScale extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final real = MediaQuery.sizeOf(context);
+    return ScaledCanvas(
+      targetWidth: canvasWidth(
+        dpi: dpi,
+        screenWidthDp: screenWidthDp,
+        realWidth: real.width,
+      ),
+      child: child,
+    );
+  }
+}
+
+/// 把子树画在 [targetWidth] 宽的逻辑画布上，相对它当前看到的画布。
+/// 全局缩放和阅读页缩放各套一层这个，两层相乘就是总缩放，所以谁都不用知道自己
+/// 在第几层——只要 targetWidth 一律用「真实设备 dp」表达。
+class ScaledCanvas extends StatelessWidget {
+  const ScaledCanvas({super.key, required this.targetWidth, required this.child});
+
+  final double targetWidth;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     final real = mq.size;
-    final w = canvasWidth(
-      dpi: dpi,
-      screenWidthDp: screenWidthDp,
-      realWidth: real.width,
-    );
-    final h = canvasHeight(
+    final w = targetWidth;
+    // 首帧尺寸未知、配置是脏值、或者本来就不用缩放：原样渲染
+    if (!w.isFinite || w <= 0 || real.width <= 0 || real.height <= 0 || w == real.width) {
+      return child;
+    }
+    final k = real.width / w;
+    final h = DisplayScale.canvasHeight(
       canvasWidth: w,
       realWidth: real.width,
       realHeight: real.height,
     );
-    // 首帧尺寸未知、配置是脏值、或者本来就不用缩放：原样渲染
-    if (h <= 0 || w == real.width) return child;
-    final k = real.width / w;
+    if (!h.isFinite || h <= 0) return child;
     return MediaQuery(
       data: mq.copyWith(
         size: Size(w, h),
@@ -85,6 +107,78 @@ class DisplayScale extends StatelessWidget {
           alignment: Alignment.topLeft,
           child: SizedBox(width: w, height: h, child: child),
         ),
+      ),
+    );
+  }
+}
+
+/// 阅读页专属缩放：readerDpiScale / readerScreenWidthDp 为 0 时整页跟随全局。
+/// 放在阅读页 Scaffold 外面，正文、顶栏底栏和翻页动画一起缩放，
+/// 而目录/设置这些弹层走根 Navigator 的 Overlay，仍然只吃全局缩放。
+class ReaderScale extends StatelessWidget {
+  const ReaderScale({super.key, required this.child});
+
+  final Widget child;
+
+  /// 阅读页想要的画布宽度（真实设备 dp）
+  static double targetWidthOf(ReaderSettings s, double realWidth) {
+    return DisplayScale.canvasWidth(
+      dpi: s.readerDpiScale > 0 ? s.readerDpiScale : s.dpiScale,
+      screenWidthDp: s.readerScreenWidthDp > 0
+          ? s.readerScreenWidthDp
+          : s.screenWidthDp,
+      realWidth: realWidth,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.watch<ReaderSettings>();
+    // 自己就在缩放画布里，设备真实宽度只能问 View
+    final device = MediaQueryData.fromView(View.of(context));
+    return ScaledCanvas(
+      targetWidth: targetWidthOf(s, device.size.width),
+      child: child,
+    );
+  }
+}
+
+/// 标题+数值一行、滑杆独占一行：面板自己也可能被缩放画布压窄，横排会把滑杆
+/// 挤到几十 dp，十几格刻度根本对不准。全局面板和阅读页设置共用这一种排布。
+class SliderRow extends StatelessWidget {
+  const SliderRow({
+    super.key,
+    required this.label,
+    required this.value,
+    required this.slider,
+    this.trailing,
+  });
+
+  final String label;
+  final String value;
+  final Widget slider;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                label,
+                style: const TextStyle(fontSize: 13, color: Colors.grey),
+              ),
+              const Spacer(),
+              Text(value, style: const TextStyle(fontSize: 13)),
+              ?trailing,
+            ],
+          ),
+          slider,
+        ],
       ),
     );
   }
@@ -147,11 +241,10 @@ class _DisplaySettingsSheet extends StatelessWidget {
                 ),
               ],
             ),
-            _row(
-              'DPI',
-              '${settings.dpiScale.toStringAsFixed(2)}×',
-              null,
-              Slider(
+            SliderRow(
+              label: 'DPI',
+              value: '${settings.dpiScale.toStringAsFixed(2)}×',
+              slider: Slider(
                 value: settings.dpiScale.clamp(DisplayScale.minDpi, DisplayScale.maxDpi),
                 min: DisplayScale.minDpi,
                 max: DisplayScale.maxDpi,
@@ -160,10 +253,10 @@ class _DisplaySettingsSheet extends StatelessWidget {
                 onChanged: setDpi,
               ),
             ),
-            _row(
-              '屏幕',
-              '${screenValue.round()} dp',
-              IconButton(
+            SliderRow(
+              label: '屏幕',
+              value: '${screenValue.round()} dp',
+              trailing: IconButton(
                 icon: Icon(
                   Icons.smartphone,
                   color: following ? const Color(0xFF2E7D5B) : Colors.grey.shade600,
@@ -171,7 +264,7 @@ class _DisplaySettingsSheet extends StatelessWidget {
                 tooltip: '跟随设备尺寸',
                 onPressed: () => settings.set(screenWidthDp: 0),
               ),
-              Slider(
+              slider: Slider(
                 value: screenValue,
                 min: DisplayScale.minScreenDp,
                 max: DisplayScale.maxScreenDp,
@@ -191,28 +284,6 @@ class _DisplaySettingsSheet extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  /// 标题和数值一行、滑杆独占下一行：面板自己也被缩放，DPI 拉到 1.6 时
-  /// 画布只剩 225dp，横向并排的话滑杆会被挤到四十多 dp，刻度根本对不准。
-  Widget _row(String label, String value, Widget? trailing, Slider slider) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(label, style: const TextStyle(fontSize: 13, color: Colors.grey)),
-              const Spacer(),
-              Text(value, style: const TextStyle(fontSize: 13)),
-              ?trailing,
-            ],
-          ),
-          slider,
-        ],
       ),
     );
   }

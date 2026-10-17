@@ -261,6 +261,10 @@ class ReaderSettings extends ChangeNotifier {
   /// 逻辑画布宽度 dp；<=0 表示跟随设备
   double screenWidthDp = 0;
 
+  // 阅读页自己的一套缩放，0 = 跟随上面的全局值。正文想比界面更大/更小才用得上。
+  double readerDpiScale = 0;
+  double readerScreenWidthDp = 0;
+
   static const pageAnims = ['仿真', '覆盖', '平移', '上下', '无动画'];
 
   bool get scrollMode => pageAnimIndex == 3;
@@ -292,6 +296,12 @@ class ReaderSettings extends ChangeNotifier {
     dpiScale = dpi.isFinite && dpi >= 0.2 && dpi <= 3 ? dpi : 1.0;
     final sw = _asDouble(s.setting('screenWidthDp'), 0);
     screenWidthDp = sw.isFinite && sw >= 200 && sw <= 2000 ? sw : 0;
+    // 阅读页这两条的 0 是「跟随全局」这个合法取值，只有既非 0 又越界的才算脏
+    final rdpi = _asDouble(s.setting('readerDpiScale'), 0);
+    readerDpiScale = rdpi == 0 || (rdpi.isFinite && rdpi >= 0.2 && rdpi <= 3) ? rdpi : 0;
+    final rsw = _asDouble(s.setting('readerScreenWidthDp'), 0);
+    readerScreenWidthDp =
+        rsw == 0 || (rsw.isFinite && rsw >= 200 && rsw <= 2000) ? rsw : 0;
     notifyListeners();
   }
 
@@ -304,6 +314,8 @@ class ReaderSettings extends ChangeNotifier {
     bool? eyeProtect,
     double? dpiScale,
     double? screenWidthDp,
+    double? readerDpiScale,
+    double? readerScreenWidthDp,
   }) async {
     if (fontSize != null) this.fontSize = fontSize;
     if (lineHeight != null) this.lineHeight = lineHeight;
@@ -313,6 +325,8 @@ class ReaderSettings extends ChangeNotifier {
     if (eyeProtect != null) this.eyeProtect = eyeProtect;
     if (dpiScale != null) this.dpiScale = dpiScale;
     if (screenWidthDp != null) this.screenWidthDp = screenWidthDp;
+    if (readerDpiScale != null) this.readerDpiScale = readerDpiScale;
+    if (readerScreenWidthDp != null) this.readerScreenWidthDp = readerScreenWidthDp;
     final s = StorageService.instance;
     if (fontSize != null) await s.putSetting('fontSize', fontSize);
     if (lineHeight != null) await s.putSetting('lineHeight', lineHeight);
@@ -322,6 +336,10 @@ class ReaderSettings extends ChangeNotifier {
     if (eyeProtect != null) await s.putSetting('eyeProtect', eyeProtect);
     if (dpiScale != null) await s.putSetting('dpiScale', dpiScale);
     if (screenWidthDp != null) await s.putSetting('screenWidthDp', screenWidthDp);
+    if (readerDpiScale != null) await s.putSetting('readerDpiScale', readerDpiScale);
+    if (readerScreenWidthDp != null) {
+      await s.putSetting('readerScreenWidthDp', readerScreenWidthDp);
+    }
     notifyListeners();
   }
 

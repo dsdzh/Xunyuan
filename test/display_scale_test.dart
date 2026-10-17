@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:xunyuan/state/app_state.dart';
 import 'package:xunyuan/widgets/display_scale.dart';
 
 /// DisplayScale 自己造画布：给子树一个缩放后的逻辑尺寸，再等比画回满屏。
@@ -115,6 +116,83 @@ void main() {
         reason: 'dpi=$dpi screen=$screen',
       );
     }
+  });
+
+  test('阅读页缩放：两条都为 0 就等于全局画布，任一非 0 就整条自己算', () {
+    ReaderSettings s({
+      double dpi = 1,
+      double screen = 0,
+      double rdpi = 0,
+      double rscreen = 0,
+    }) {
+      final s = ReaderSettings()
+        ..dpiScale = dpi
+        ..screenWidthDp = screen
+        ..readerDpiScale = rdpi
+        ..readerScreenWidthDp = rscreen;
+      return s;
+    }
+
+    // 设备 800 宽
+    expect(ReaderScale.targetWidthOf(s(), 800), 800);
+    // 只动全局 → 阅读页跟着走
+    expect(ReaderScale.targetWidthOf(s(dpi: 2), 800), 400);
+    // 阅读 DPI 覆盖全局 DPI
+    expect(ReaderScale.targetWidthOf(s(dpi: 2, rdpi: 4), 800), 200);
+    // 阅读屏幕覆盖全局屏幕，DPI 仍跟随全局
+    expect(ReaderScale.targetWidthOf(s(dpi: 2, screen: 500, rscreen: 600), 800), 300);
+    // 两条都覆盖
+    expect(ReaderScale.targetWidthOf(s(screen: 500, rdpi: 2, rscreen: 400), 800), 200);
+  });
+
+  testWidgets('两层 ScaledCanvas 叠加：内层 targetWidth 用设备 dp，总缩放=设备宽/目标宽', (tester) async {
+    // 全局先把 800x600 收成 400x300（k=2），阅读页再要 200 宽（相对 400 是 k=2），
+    // 内层子树应当看到 200x150，总放大 4 倍。
+    var hits = 0;
+    late MediaQueryData inner;
+    await tester.pumpWidget(
+      MediaQuery(
+        data: const MediaQueryData(size: device, devicePixelRatio: dpr),
+        child: Directionality(
+          textDirection: TextDirection.ltr,
+          child: ScaledCanvas(
+            targetWidth: 400,
+            child: ScaledCanvas(
+              targetWidth: 200,
+              child: Builder(
+                builder: (context) {
+                  inner = MediaQuery.of(context);
+                  return Stack(
+                    children: [
+                      Positioned(
+                        left: 50,
+                        top: 50,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => hits++,
+                          child: const SizedBox(
+                            width: 40,
+                            height: 40,
+                            child: ColoredBox(color: Colors.blue),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(inner.size, const Size(200, 150));
+    // 画布 (70,70) → 设备 (280,280)
+    expect(hits, 0);
+    await tester.tapAt(const Offset(280, 280));
+    expect(hits, 1);
+    await tester.tapAt(const Offset(120, 120));
+    expect(hits, 1);
   });
 
   testWidgets('缩放后点击仍然落在该落的控件上', (tester) async {
