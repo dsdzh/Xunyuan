@@ -95,6 +95,28 @@ void main() {
     expect(capturedMq.size.width, lessThanOrEqualTo(4000));
   });
 
+  testWidgets('canvasHeight 读数必须等于子树真正看到的画布高度', (tester) async {
+    // 面板里那行「当前画布 W × H」以前自己另写了一遍公式还把比例搞反，
+    // 所以这里把两者钉在一起：读数错了用户会以为缩放没生效。
+    for (final (dpi, screen) in [(1.0, 0.0), (2.0, 0.0), (1.0, 500.0), (0.7, 640.0)]) {
+      await boot(tester, dpi: dpi, screen: screen, probe: capture);
+      final w = DisplayScale.canvasWidth(
+        dpi: dpi,
+        screenWidthDp: screen,
+        realWidth: device.width,
+      );
+      expect(
+        DisplayScale.canvasHeight(
+          canvasWidth: w,
+          realWidth: device.width,
+          realHeight: device.height,
+        ),
+        closeTo(capturedMq.size.height, 1e-6),
+        reason: 'dpi=$dpi screen=$screen',
+      );
+    }
+  });
+
   testWidgets('缩放后点击仍然落在该落的控件上', (tester) async {
     var hits = 0;
     await boot(

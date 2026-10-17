@@ -41,6 +41,18 @@ class DisplayScale extends StatelessWidget {
     return (base / dpi).clamp(120.0, 4000.0);
   }
 
+  /// 画布高度：必须和宽度用同一个缩放系数，否则画面要么留白要么溢出。
+  /// 和 canvasWidth 放在一起，是为了让面板里的读数不会再各算各的。
+  static double canvasHeight({
+    required double canvasWidth,
+    required double realWidth,
+    required double realHeight,
+  }) {
+    if (!canvasWidth.isFinite || canvasWidth <= 0) return 0;
+    if (!realWidth.isFinite || realWidth <= 0 || !realHeight.isFinite) return 0;
+    return realHeight * canvasWidth / realWidth;
+  }
+
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
@@ -50,12 +62,14 @@ class DisplayScale extends StatelessWidget {
       screenWidthDp: screenWidthDp,
       realWidth: real.width,
     );
+    final h = canvasHeight(
+      canvasWidth: w,
+      realWidth: real.width,
+      realHeight: real.height,
+    );
     // 首帧尺寸未知、配置是脏值、或者本来就不用缩放：原样渲染
-    if (!w.isFinite || w <= 0 || real.width <= 0 || real.height <= 0 || w == real.width) {
-      return child;
-    }
+    if (h <= 0 || w == real.width) return child;
     final k = real.width / w;
-    final h = real.height / k;
     return MediaQuery(
       data: mq.copyWith(
         size: Size(w, h),
@@ -98,7 +112,11 @@ class _DisplaySettingsSheet extends StatelessWidget {
       screenWidthDp: settings.screenWidthDp,
       realWidth: device.size.width,
     );
-    final h = w > 0 ? device.size.width / w * device.size.height : 0.0;
+    final h = DisplayScale.canvasHeight(
+      canvasWidth: w,
+      realWidth: device.size.width,
+      realHeight: device.size.height,
+    );
     final following = settings.screenWidthDp <= 0;
     final screenValue = (following ? device.size.width : settings.screenWidthDp).clamp(
       DisplayScale.minScreenDp,
