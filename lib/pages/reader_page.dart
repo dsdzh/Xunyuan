@@ -60,7 +60,6 @@ class _ReaderPageState extends State<ReaderPage>
   List<String> _chapterParagraphs = [];
   int _currentChapter = 0;
   int _readPage = 0;
-  int _pagesTotal = 1;
   // 向后翻章时页数尚未知，置位后在 LayoutBuilder 拿到 pages 时落到最后一页
   bool _pendingLastPage = false;
   // 翻页模式跳章代数：仅最新一次加载可落地，防目录连点旧请求覆盖新章
@@ -84,6 +83,8 @@ class _ReaderPageState extends State<ReaderPage>
 
   double _progress = 0;
   int _progressChapter = 0;
+  // 底部进度条拖动时的预览章节，-1 表示没在拖；松手才真正跳章
+  int _seekChapter = -1;
 
   // 断点恢复：章内进度比例（仅对打开时的起始章节生效一次）
   double? _restoreRatio;
@@ -471,8 +472,8 @@ class _ReaderPageState extends State<ReaderPage>
       _progressChapter = idx;
       _chapterParagraphs = paras;
       _readPage = 0;
-      // 跳章没有翻页动画、不会逐帧重建，底部进度条 build 时读到的仍是旧章 _progress，
-      // 这里同步一次：向后翻章由 _pendingLastPage 落到末页，其余从首页开始
+      // 跳章没有翻页动画、不会逐帧重建，这里的 _progress 若不同步就会把上一章的页内比例
+      // 存成断点：向后翻章由 _pendingLastPage 落到末页，其余从首页开始
       _progress = _pendingLastPage ? 1.0 : 0.0;
       _turnFrom = null;
     });
@@ -694,13 +695,12 @@ class _ReaderPageState extends State<ReaderPage>
                   pages.length - 1,
                 );
                 _restoreRatio = null;
-                // LayoutBuilder 在 layout 阶段执行，底部进度条 build 时读到的是旧 _progress，补一次重建
+                // LayoutBuilder 在 layout 阶段执行，这里改掉的页码/进度不会再触发 build，补一次重建
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (mounted) setState(() {});
                 });
               }
               if (_readPage >= pages.length) _readPage = pages.length - 1;
-              _pagesTotal = pages.length;
               _progress = pages.length <= 1
                   ? 0.0
                   : (_readPage / (pages.length - 1)).clamp(0.0, 1.0);
@@ -1227,6 +1227,39 @@ class _ReaderPageState extends State<ReaderPage>
     ).showSnackBar(SnackBar(content: Text(added ? '已加入书架' : '加入书架失败：书信息不完整')));
   }
 
+  /// 底部这条进度条管的是整本书的章节，不是当前章的页数：
+  /// 一格一章，拖动时只预览（不发网络请求），松手才跳章。
+  Widget _chapterSlider(Color fg, int current) {
+    final total = _chapters.length;
+    if (total < 2) {
+      return SizedBox(
+        height: 2,
+        child: LinearProgressIndicator(
+          value: total == 0 ? 0.0 : 1.0,
+          backgroundColor: fg.withValues(alpha: 0.18),
+          valueColor: AlwaysStoppedAnimation(fg.withValues(alpha: 0.6)),
+        ),
+      );
+    }
+    final shown = _seekChapter >= 0 ? _seekChapter : current.clamp(0, total - 1);
+    return Slider(
+      value: shown.toDouble(),
+      max: (total - 1).toDouble(),
+      divisions: total - 1,
+      label: '第 ${shown + 1}/$total 章',
+      // 每滑过一章才重建：整页正文都会跟着 setState 重排，逐帧刷太浪费
+      onChanged: (v) {
+        final i = v.round();
+        if (i == _seekChapter) return;
+        setState(() => _seekChapter = i);
+      },
+      onChangeEnd: (v) {
+        setState(() => _seekChapter = -1);
+        _jumpToChapter(v.round());
+      },
+    );
+  }
+
   Widget _buildBottomBar(Color bg, Color fg, ReaderSettings settings) {
     final shownChapter = _scrollMode ? _visibleChapter() : _currentChapter;
     final chapterTitle = _chapters.isEmpty
@@ -1257,30 +1290,7 @@ class _ReaderPageState extends State<ReaderPage>
                     ),
                   ),
                   Expanded(
-                    child: Slider(
-                      value: _progress,
-                      onChanged: (v) {
-                        if (_scrollMode) {
-                          if (_scrollController.hasClients) {
-                            _scrollController.jumpTo(
-                              v * _scrollController.position.maxScrollExtent,
-                            );
-                          }
-                          setState(() => _progress = v);
-                        } else {
-                          _stopTurnAnim();
-                          setState(() {
-                            _readPage = (_pagesTotal <= 1)
-                                ? 0
-                                : (v * (_pagesTotal - 1)).round().clamp(
-                                    0,
-                                    _pagesTotal - 1,
-                                  );
-                            _progress = v;
-                          });
-                        }
-                      },
-                    ),
+                    child: _chapterSlider(fg, shownChapter),
                   ),
                   TextButton(
                     onPressed: shownChapter + 1 < _chapters.length
