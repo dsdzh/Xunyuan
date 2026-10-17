@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
 import '../widgets/book_tile.dart';
+import '../widgets/display_scale.dart';
 import 'history_page.dart';
 import 'reader_page.dart';
 import 'search_page.dart';
@@ -149,6 +150,11 @@ class _BookshelfPageState extends State<BookshelfPage> {
                   icon: const Icon(Icons.checklist),
                   tooltip: '批量删除',
                   onPressed: books.isEmpty ? null : _enterSelect,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.screenshot_monitor_outlined),
+                  tooltip: '显示设置',
+                  onPressed: () => showDisplaySettings(context),
                 ),
               ],
             ),

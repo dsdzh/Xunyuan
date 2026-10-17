@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import 'pages/main_page.dart';
 import 'state/app_state.dart';
+import 'widgets/display_scale.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -107,6 +108,7 @@ class XunyuanApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final settings = context.watch<ReaderSettings>();
     return MaterialApp(
       title: '寻源',
       debugShowCheckedModeBanner: false,
@@ -120,6 +122,12 @@ class XunyuanApp extends StatelessWidget {
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
+      ),
+      // builder 在 Navigator 之上，所以弹层/对话框/键盘 insets 一起跟着缩放
+      builder: (context, child) => DisplayScale(
+        dpi: settings.dpiScale,
+        screenWidthDp: settings.screenWidthDp,
+        child: child!,
       ),
       home: const _BootFade(child: MainPage()),
     );

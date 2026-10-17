@@ -255,6 +255,12 @@ class ReaderSettings extends ChangeNotifier {
   double brightness = 1.0; // 阅读页亮度遮罩 0.3~1.0
   bool eyeProtect = false;
 
+  // 这两条是全局显示设置（不只作用于阅读页），见 widgets/display_scale.dart
+  double dpiScale = 1.0;
+
+  /// 逻辑画布宽度 dp；<=0 表示跟随设备
+  double screenWidthDp = 0;
+
   static const pageAnims = ['仿真', '覆盖', '平移', '上下', '无动画'];
 
   bool get scrollMode => pageAnimIndex == 3;
@@ -281,6 +287,11 @@ class ReaderSettings extends ChangeNotifier {
     pageAnimIndex = anim;
     brightness = _asDouble(s.setting('brightness'), 1.0);
     eyeProtect = s.setting('eyeProtect') is bool ? s.setting('eyeProtect') as bool : false;
+    // 缩放值会决定整屏画布大小，脏值（NaN/0/负数）会让 App 直接白屏，落库前不认
+    final dpi = _asDouble(s.setting('dpiScale'), 1.0);
+    dpiScale = dpi.isFinite && dpi >= 0.2 && dpi <= 3 ? dpi : 1.0;
+    final sw = _asDouble(s.setting('screenWidthDp'), 0);
+    screenWidthDp = sw.isFinite && sw >= 200 && sw <= 2000 ? sw : 0;
     notifyListeners();
   }
 
@@ -291,6 +302,8 @@ class ReaderSettings extends ChangeNotifier {
     int? pageAnimIndex,
     double? brightness,
     bool? eyeProtect,
+    double? dpiScale,
+    double? screenWidthDp,
   }) async {
     if (fontSize != null) this.fontSize = fontSize;
     if (lineHeight != null) this.lineHeight = lineHeight;
@@ -298,6 +311,8 @@ class ReaderSettings extends ChangeNotifier {
     if (pageAnimIndex != null) this.pageAnimIndex = pageAnimIndex;
     if (brightness != null) this.brightness = brightness;
     if (eyeProtect != null) this.eyeProtect = eyeProtect;
+    if (dpiScale != null) this.dpiScale = dpiScale;
+    if (screenWidthDp != null) this.screenWidthDp = screenWidthDp;
     final s = StorageService.instance;
     if (fontSize != null) await s.putSetting('fontSize', fontSize);
     if (lineHeight != null) await s.putSetting('lineHeight', lineHeight);
@@ -305,6 +320,8 @@ class ReaderSettings extends ChangeNotifier {
     if (pageAnimIndex != null) await s.putSetting('pageAnimIndex', pageAnimIndex);
     if (brightness != null) await s.putSetting('brightness', brightness);
     if (eyeProtect != null) await s.putSetting('eyeProtect', eyeProtect);
+    if (dpiScale != null) await s.putSetting('dpiScale', dpiScale);
+    if (screenWidthDp != null) await s.putSetting('screenWidthDp', screenWidthDp);
     notifyListeners();
   }
 
