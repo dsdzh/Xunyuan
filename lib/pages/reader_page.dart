@@ -1028,9 +1028,12 @@ class _ReaderPageState extends State<ReaderPage>
   /// 手势/点击起翻时把当前页同步抓成位图，作为卷起的上层页；抓帧失败置空回退到 hinge。
   void _captureTurnImage() {
     try {
-      final ro = _pageKey.currentContext?.findRenderObject();
+      final pageContext = _pageKey.currentContext;
+      final ro = pageContext?.findRenderObject();
       if (ro is RenderRepaintBoundary) {
-        final dpr = MediaQuery.devicePixelRatioOf(context);
+        // dpr 要问页面自己：阅读页还能单独再套一层缩放，State 的 context 在那层之外，
+        // 拿它算出来的位图分辨率偏低，卷页时正文会糊。
+        final dpr = MediaQuery.devicePixelRatioOf(pageContext!);
         _turnImage?.dispose();
         _turnImage = ro.toImageSync(pixelRatio: dpr);
         return;
