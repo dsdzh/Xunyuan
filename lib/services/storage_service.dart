@@ -1,9 +1,12 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:hive_ce_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../core/book_source_engine.dart';
 import '../models/book_source.dart';
+import 'box_salvage.dart';
 
 /// 本地存储：书源、书架、阅读进度、章节缓存、设置。
 class StorageService {
@@ -14,6 +17,11 @@ class StorageService {
   late Box<String> _books; // key: 书唯一键, value: 书架条目 JSON
   late Box<String> _cache; // key: 章节键, value: 正文
   late Box<dynamic> _settings;
+
+  String _boxDir = '';
+
+  /// 启动期抢救坏盒的说明，首页一次性告知用户
+  final List<String> recoveryNotes = [];
 
   /// 读-改-写操作（历史列表整存整取、书源 enabled 回写）必须串行，
   /// 否则两次 await 交叠会让后写覆盖先写，丢失更新
@@ -26,10 +34,29 @@ class StorageService {
 
   Future<void> init() async {
     await Hive.initFlutter();
-    _sources = await Hive.openBox<String>('sources');
-    _books = await Hive.openBox<String>('books');
-    _cache = await Hive.openBox<String>('chapter_cache');
-    _settings = await Hive.openBox<dynamic>('settings');
+    _boxDir = (await getApplicationDocumentsDirectory()).path;
+    _sources = await _open<String>('sources', '书源');
+    _books = await _open<String>('books', '书架');
+    _cache = await _open<String>('chapter_cache', '章节缓存', salvage: false);
+    _settings = await _open<dynamic>('settings', '设置');
+  }
+
+  Future<Box<T>> _open<T>(String name, String label, {bool salvage = true}) async {
+    final r = await openBoxWithRecovery<T>(name, label,
+        path: _boxDir, salvage: salvage, keySanitizer: boxKeyOf);
+    if (r.note != null) recoveryNotes.add(r.note!);
+    return r.box;
+  }
+
+  /// hive 帧里字符串键的长度只占一个字节：UTF-8 超过 255 字节时被截断 mod 256，
+  /// 键与值的边界就此错位，下次启动读盒会把键文本里的 '.'(0x2E) 当成值类型，
+  /// 抛 "Cannot read, unknown typeId: 46" 并让整盒打不开（真机启动失败即此，
+  /// debug 下有 assert 拦、release 直接写坏）。我们的键全由 URL 拼成、长度不可控，
+  /// 所以读写两侧都先过这个函数；短键原样返回所以老数据无需迁移，幂等。
+  static String boxKeyOf(String raw) {
+    final bytes = utf8.encode(raw);
+    if (bytes.length <= 255) return raw;
+    return 'k${crypto.sha1.convert(bytes).toString().substring(0, 24)}';
   }
 
   // ---------- 书源 ----------
@@ -51,7 +78,7 @@ class StorageService {
   Future<void> saveSource(BookSource source) async {
     final j = Map<String, dynamic>.from(source.raw);
     j['enabled'] = source.enabled;
-    await _sources.put(source.bookSourceUrl, jsonEncode(j));
+    await _sources.put(boxKeyOf(source.bookSourceUrl), jsonEncode(j));
   }
 
   Future<ImportResult> importSources(List<BookSource> incoming) => _serialized(() async {
@@ -63,13 +90,14 @@ class StorageService {
             continue;
           }
           try {
+            final key = boxKeyOf(url);
             final j = Map<String, dynamic>.from(s.raw);
             j['bookSourceUrl'] = url;
-            final old = _sources.get(url);
+            final old = _sources.get(key);
             if (old == null) {
               // 新源：沿用文件里的 enabled（音频/视频/失效源常被作者有意标成 false）
               j['enabled'] = s.enabled;
-              await _sources.put(url, jsonEncode(j));
+              await _sources.put(key, jsonEncode(j));
               added++;
             } else {
               // 已存在：更新规则等内容，但保留用户本地的开关与排序，
@@ -83,7 +111,7 @@ class StorageService {
               } catch (_) {
                 j['enabled'] = s.enabled;
               }
-              await _sources.put(url, jsonEncode(j));
+              await _sources.put(key, jsonEncode(j));
               updated++;
             }
           } catch (_) {
@@ -94,19 +122,20 @@ class StorageService {
         return ImportResult(added: added, updated: updated, skipped: skipped);
       });
 
-  Future<void> removeSource(String url) => _sources.delete(url);
+  Future<void> removeSource(String url) => _sources.delete(boxKeyOf(url));
 
   Future<void> clearSources() => _sources.clear();
 
-  bool sourceExists(String url) => _sources.containsKey(url);
+  bool sourceExists(String url) => _sources.containsKey(boxKeyOf(url));
 
   Future<void> setSourceEnabled(String url, bool enabled) => _serialized(() async {
-        final raw = _sources.get(url);
+        final key = boxKeyOf(url);
+        final raw = _sources.get(key);
         if (raw == null) return;
         final decoded = jsonDecode(raw);
         if (decoded is! Map<String, dynamic>) return; // 缓存条目损坏时静默跳过，调用方不 catch
         decoded['enabled'] = enabled;
-        await _sources.put(url, jsonEncode(decoded));
+        await _sources.put(key, jsonEncode(decoded));
       });
 
   String exportAllSources() {
@@ -122,7 +151,7 @@ class StorageService {
 
   // ---------- 书源健康度 ----------
   // 按完整源 URL 记：同站常有多个书源，规则不同健康度互不相干
-  static String _healthKey(String sourceUrl) => 'health::$sourceUrl';
+  static String _healthKey(String sourceUrl) => boxKeyOf('health::$sourceUrl');
 
   Map<String, dynamic>? getSourceHealth(String sourceUrl) {
     final v = _settings.get(_healthKey(sourceUrl));
@@ -140,7 +169,10 @@ class StorageService {
   Future<void> removeSourceHealth(String sourceUrl) => _settings.delete(_healthKey(sourceUrl));
 
   // ---------- 书籍 / 书架 ----------
-  static String bookKey(String name, String author, String sourceUrl) => '$name|$author|$sourceUrl';
+  // 返回值同时是 hive 键和书架条目里的 book['key']，所有比较都走这个函数，
+  // 所以截断必须在生成处一次做完
+  static String bookKey(String name, String author, String sourceUrl) =>
+      boxKeyOf('$name|$author|$sourceUrl');
 
   List<Map<String, dynamic>> get shelf {
     final list = <Map<String, dynamic>>[];
@@ -154,7 +186,7 @@ class StorageService {
   }
 
   Map<String, dynamic>? getBook(String key) {
-    final v = _books.get(key);
+    final v = _books.get(boxKeyOf(key));
     if (v == null) return null;
     try {
       return (jsonDecode(v) as Map).cast<String, dynamic>();
@@ -163,9 +195,10 @@ class StorageService {
     }
   }
 
-  Future<void> putBook(Map<String, dynamic> book) => _books.put(book['key'] as String, jsonEncode(book));
+  Future<void> putBook(Map<String, dynamic> book) =>
+      _books.put(boxKeyOf(book['key'] as String), jsonEncode(book));
 
-  Future<void> removeBook(String key) => _books.delete(key);
+  Future<void> removeBook(String key) => _books.delete(boxKeyOf(key));
 
   // ---------- 浏览记录 ----------
   static const _historyKey = 'readHistory';
@@ -197,10 +230,11 @@ class StorageService {
       });
 
   // ---------- 章节缓存 ----------
-  String? getCachedChapter(String chapterKey) => _cache.get(chapterKey);
+  // 缓存键里拼了整条章节 URL，长度不可控，必须过 boxKeyOf
+  String? getCachedChapter(String chapterKey) => _cache.get(boxKeyOf(chapterKey));
 
   Future<void> putCachedChapter(String chapterKey, String content) async {
-    await _cache.put(chapterKey, content);
+    await _cache.put(boxKeyOf(chapterKey), content);
     // 简单容量控制：超过 2000 条删最旧一半（hive 无时间戳则按 key 迭代顺序）
     if (_cache.length > 2000) {
       final drop = _cache.keys.take(800).toList();
@@ -211,7 +245,7 @@ class StorageService {
   Future<void> clearChapterCache() => _cache.clear();
 
   // ---------- 目录缓存 ----------
-  static String _tocKey(String tocUrl) => 'toc::$tocUrl';
+  static String _tocKey(String tocUrl) => boxKeyOf('toc::$tocUrl');
 
   List<Chapter>? getCachedToc(String tocUrl) {
     final raw = _cache.get(_tocKey(tocUrl));
