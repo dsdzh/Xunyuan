@@ -1312,32 +1312,48 @@ class _ReaderPageState extends State<ReaderPage>
                 ],
               ),
             ),
+            // 三个按钮各占一份并用 scaleDown 缩：阅读画布窄到 175dp 时
+            // spaceEvenly 会把「设置」整颗推出屏幕，用户就再也打不开缩放面板了。
             Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                TextButton.icon(
-                  icon: Icon(Icons.toc, color: fg, size: 18),
-                  label: Text('目录', style: TextStyle(color: fg, fontSize: 13)),
-                  onPressed: _showTocSheet,
-                ),
-                TextButton.icon(
-                  icon: Icon(
-                    isNight ? Icons.light_mode : Icons.dark_mode,
-                    color: fg,
-                    size: 18,
+                Expanded(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: TextButton.icon(
+                      icon: Icon(Icons.toc, color: fg, size: 18),
+                      label: Text('目录', style: TextStyle(color: fg, fontSize: 13)),
+                      onPressed: _showTocSheet,
+                    ),
                   ),
-                  label: Text('夜间', style: TextStyle(color: fg, fontSize: 13)),
-                  onPressed: () {
-                    final nightIdx = ReaderSettings.themes.indexWhere(
-                      (t) => t.name == '夜间',
-                    );
-                    settings.set(themeIndex: isNight ? 0 : nightIdx);
-                  },
                 ),
-                TextButton.icon(
-                  icon: Icon(Icons.settings_outlined, color: fg, size: 18),
-                  label: Text('设置', style: TextStyle(color: fg, fontSize: 13)),
-                  onPressed: () => _showSettings(settings),
+                Expanded(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: TextButton.icon(
+                      icon: Icon(
+                        isNight ? Icons.light_mode : Icons.dark_mode,
+                        color: fg,
+                        size: 18,
+                      ),
+                      label: Text('夜间', style: TextStyle(color: fg, fontSize: 13)),
+                      onPressed: () {
+                        final nightIdx = ReaderSettings.themes.indexWhere(
+                          (t) => t.name == '夜间',
+                        );
+                        settings.set(themeIndex: isNight ? 0 : nightIdx);
+                      },
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: TextButton.icon(
+                      icon: Icon(Icons.settings_outlined, color: fg, size: 18),
+                      label: Text('设置', style: TextStyle(color: fg, fontSize: 13)),
+                      onPressed: () => _showSettings(settings),
+                    ),
+                  ),
                 ),
               ],
             ),
