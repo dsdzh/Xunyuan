@@ -35,13 +35,18 @@ class SourceHealth {
 
   static SourceHealth? fromJson(Map<String, dynamic>? j) {
     if (j == null) return null;
+    // 健康度记录存在 settings 盒里，坏盒逐帧抢救后可能留下类型不对的字段
+    // （'level':"ok"、latency 是字符串等）。这里强转 num 会抛 TypeError，
+    // 而 SourceState.load() 是逐个源直接调用的，一条脏记录能打断整个书源页加载。
     return SourceHealth(
-      (j['level'] as num?)?.toInt() ?? HealthLevel.unknown,
-      (j['latency'] as num?)?.toInt() ?? 0,
-      (j['message'] ?? '').toString(),
-      (j['at'] as num?)?.toInt() ?? 0,
+      _asInt(j['level'], HealthLevel.unknown),
+      _asInt(j['latency'], 0),
+      j['message']?.toString() ?? '',
+      _asInt(j['at'], 0),
     );
   }
+
+  static int _asInt(dynamic v, int def) => v is num ? v.toInt() : int.tryParse('$v') ?? def;
 }
 
 class SourceHealthChecker {

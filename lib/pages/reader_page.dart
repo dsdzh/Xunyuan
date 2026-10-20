@@ -7,6 +7,7 @@ import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 
 import '../core/book_source_engine.dart';
+import '../core/chapter_paginator.dart';
 import '../models/book_source.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
@@ -1067,86 +1068,15 @@ class _ReaderPageState extends State<ReaderPage>
     }
     final pageWidth = constraints.maxWidth;
     final pageHeight = constraints.maxHeight - settings.fontSize * 1.2 - 4;
-    final style = TextStyle(
+    final pages = ChapterPaginator.paginate(
+      paragraphs: chapterParagraphs,
       fontSize: settings.fontSize,
-      height: settings.lineHeight,
+      lineHeight: settings.lineHeight,
+      pageWidth: pageWidth,
+      pageHeight: pageHeight,
+      // 章标题只占首页顶部空间
+      titleReserve: settings.fontSize * 2.5,
     );
-    final pages = <String>[];
-    var current = <String>[];
-    // 章标题只占首页顶部空间
-    var currentHeight = settings.fontSize * 2.5;
-    // 页面文本用 \n\n 连接，段间实际占一整空行，测量必须与渲染一致，否则底部文字被裁
-    final sepH = settings.fontSize * settings.lineHeight;
-
-    double paraHeight(String p) {
-      final tp = TextPainter(
-        text: TextSpan(text: p, style: style),
-        maxLines: null,
-        textDirection: TextDirection.ltr,
-      )..layout(maxWidth: pageWidth);
-      final h = tp.height;
-      tp.dispose();
-      return h;
-    }
-
-    // 单段高度超过一页时按页高切片，否则固定高度页会裁掉尾部（整章只有一段的书源常见）
-    // chunkMax 预留首页章标题空间，保证每片落在任何一页都不溢出
-    final chunkMax = math.max(
-      pageHeight - settings.fontSize * 2.5,
-      settings.fontSize * 2,
-    );
-    List<String> splitOversized(String p) {
-      final out = <String>[];
-      var remaining = p;
-      var guard = 0;
-      while (remaining.isNotEmpty && guard++ < 5000) {
-        final tp = TextPainter(
-          text: TextSpan(text: remaining, style: style),
-          maxLines: null,
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: pageWidth);
-        if (tp.height <= chunkMax) {
-          tp.dispose();
-          out.add(remaining);
-          break;
-        }
-        var cut = tp.getPositionForOffset(Offset(0, chunkMax)).offset;
-        tp.dispose();
-        if (cut <= 0) cut = 1; // 至少推进 1 字符，防超大字号/单行超页死循环
-        if (cut >= remaining.length) {
-          out.add(remaining);
-          break;
-        }
-        out.add(remaining.substring(0, cut));
-        remaining = remaining.substring(cut);
-      }
-      return out;
-    }
-
-    void pack(String text, double ph) {
-      final withSep = ph + (current.isEmpty ? 0 : sepH);
-      if (currentHeight + withSep > pageHeight && current.isNotEmpty) {
-        pages.add(current.join('\n\n'));
-        current = [text];
-        currentHeight = ph;
-      } else {
-        current.add(text);
-        currentHeight += withSep;
-      }
-    }
-
-    for (final p in chapterParagraphs) {
-      final ph = paraHeight(p);
-      if (ph > pageHeight) {
-        for (final c in splitOversized(p)) {
-          pack(c, paraHeight(c));
-        }
-      } else {
-        pack(p, ph);
-      }
-    }
-    if (current.isNotEmpty) pages.add(current.join('\n\n'));
-    if (pages.isEmpty) pages.add('　');
     _pagesCache = pages;
     _pagesSrc = chapterParagraphs;
     _pagesKey1 = settings.fontSize;
