@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/book_source_engine.dart';
+import '../core/text_boundary.dart';
 import '../models/book_source.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
@@ -235,7 +236,7 @@ class _DetailPageState extends State<DetailPage> {
         alignment: Alignment.center,
         child: Text(() {
           final n = d?.name ?? widget.result.name;
-          return n.length <= 2 ? n : n.substring(0, 2);
+          return TextBoundary.truncate(n, 2);
         }(),
             style: const TextStyle(fontSize: 22, color: Color(0xFF2E7D5B), fontWeight: FontWeight.bold)),
       );

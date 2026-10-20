@@ -151,7 +151,14 @@ class RuleEngine {
       results = _cssChain(_parseHtml(content), core);
     }
 
-    if (results.isEmpty && nodes == false && regexPattern != null && core.isNotEmpty && !isJson) {
+    // 兜底只对纯文本内容生效：选择器没命中就把带标签的原文当文本喂给正则，
+    // 上层会拿到整段 `<tr>…</tr>` 当书名，搜索结果页满屏脏条目。
+    if (results.isEmpty &&
+        nodes == false &&
+        regexPattern != null &&
+        core.isNotEmpty &&
+        !isJson &&
+        !containsMarkup(content)) {
       // 元素未命中时，允许对全文执行正则兜底（部分书源写法）
       results = [content];
     }
@@ -532,6 +539,12 @@ class RuleEngine {
         return node.attributes[attr] ?? '';
     }
   }
+
+  static final RegExp _tagRe = RegExp(r'<\s*/?\s*[a-zA-Z!][^<>]*>');
+
+  /// 文本里是否还残留 HTML 标签（含 `<!DOCTYPE` / `<!--`）。
+  /// 用于识别"选择器没命中、把整段 markup 当正文返回"的脏结果。
+  static bool containsMarkup(String s) => _tagRe.hasMatch(s);
 
   static String _nodeToText(dynamic node) {
     if (node == null) return '';

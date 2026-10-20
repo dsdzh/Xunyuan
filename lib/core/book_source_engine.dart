@@ -5,6 +5,7 @@ import 'package:html/dom.dart' as h;
 import '../models/book_source.dart';
 import 'http_client.dart';
 import 'rule_engine.dart';
+import 'text_boundary.dart';
 
 class SearchBook {
   final String name;
@@ -375,7 +376,9 @@ class BookSourceEngine {
         ));
       }
     }
-    return out.where((b) => b.name.isNotEmpty).toList();
+    // 书名里仍有标签 = 规则没命中却把整段 markup 当成了文本，
+    // 这类条目点不开详情页，留在搜索结果里只会糊屏。
+    return out.where((b) => b.name.isNotEmpty && !RuleEngine.containsMarkup(b.name)).toList();
   }
 
   String _itemToText(dynamic item) {
@@ -606,7 +609,7 @@ class BookSourceEngine {
       url = abs;
     }
     var text = buffers.join('\n');
-    if (text.length > maxLen) text = text.substring(0, maxLen);
+    if (text.length > maxLen) text = TextBoundary.truncate(text, maxLen);
     if (rc.replaceRegex.trim().isNotEmpty) {
       text = _applyReplace(text, rc.replaceRegex);
     }
@@ -627,7 +630,7 @@ class BookSourceEngine {
         }
       } catch (_) {}
       // 病态正则+模板可把文本滚成天文数字，按章上限截断
-      if (text.length > 2000000) text = text.substring(0, 2000000);
+      if (text.length > 2000000) text = TextBoundary.truncate(text, 2000000);
     }
     return text;
   }

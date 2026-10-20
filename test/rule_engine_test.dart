@@ -97,6 +97,30 @@ void main() {
     expect(RuleEngine.getStringList('{"a":[1,2]}', r'$..[title', isJson: true), isEmpty);
   });
 
+  test('选择器未命中：HTML 内容不得被当成文本返回（独步小说网脏搜索结果）', () {
+    // bookList=tag.tbody.0@tag.tr，无结果行里没有 <a>；旧实现把整段 <tr> 喂给 ##《|》
+    // 后原样返回，书名变成一屏 markup，点进详情必失败。
+    const empty = '<tr><td>没有找到包含：xingyuan的小说</td></tr>';
+    expect(RuleEngine.getString(empty, r'tag.a.0@text##《|》'), isEmpty);
+    expect(RuleEngine.getString(empty, r'tag.a.0@html##<[^>]*>##'), isEmpty);
+    // 正常行不受影响
+    const row = '<tr><td><a href="/book/1.html">《星渊纪元1》</a></td><td>作者甲</td></tr>';
+    expect(RuleEngine.getString(row, r'tag.a.0@text##《|》'), '星渊纪元1');
+    expect(RuleEngine.getString(row, 'tag.a.0@href'), '/book/1.html');
+  });
+
+  test('选择器未命中：纯文本内容仍保留正则兜底', () {
+    const plain = '本章未完\n书名：星渊纪元1\n作者：甲';
+    expect(RuleEngine.getString(plain, r'class.never@text###书名：\S+'), '书名：星渊纪元1');
+    expect(RuleEngine.getString(plain, r'class.never@text##本章未完\n##'), '书名：星渊纪元1\n作者：甲');
+  });
+
+  test('containsMarkup 判定', () {
+    expect(RuleEngine.containsMarkup('<tr><td>x</td></tr>'), true);
+    expect(RuleEngine.containsMarkup('<!DOCTYPE html>'), true);
+    expect(RuleEngine.containsMarkup('　　正文里没有标签，只有《书名》'), false);
+  });
+
   test(r'深层嵌套 JSON 的 $..key 不 StackOverflow', () {
     final deep = '[' * 20000 + ']' * 20000; // 递归下降深度护栏须拦截
     expect(() => RuleEngine.getStringList(deep, r'$..title', isJson: true), returnsNormally);

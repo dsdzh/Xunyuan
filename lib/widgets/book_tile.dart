@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../core/text_boundary.dart';
+
 /// 通用书籍列表项
 class BookTile extends StatelessWidget {
   final String name;
@@ -100,7 +102,7 @@ class BookCover extends StatelessWidget {
       ),
       alignment: Alignment.center,
       child: Text(
-        name.length <= 2 ? name : name.substring(0, 2),
+        TextBoundary.truncate(name, 2),
         style: const TextStyle(fontSize: 14, color: Color(0xFF2E7D5B), fontWeight: FontWeight.bold),
       ),
     );
