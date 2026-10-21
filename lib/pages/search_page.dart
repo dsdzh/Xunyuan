@@ -58,6 +58,8 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage> {
   late final TextEditingController _controller = TextEditingController(text: widget.initialKeyword);
+  final FocusNode _searchFocus = FocusNode();
+  double _emptyPull = 0;
   final List<SourceGroupResult> _results = [];
   Set<String> _selectedUrls = {};
   final Set<String> _seenUrls = {};
@@ -89,6 +91,7 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void dispose() {
     _controller.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -147,6 +150,8 @@ class _SearchPageState extends State<SearchPage> {
     if (mounted) setState(() => _selectedUrls = selected);
   }
 
+  void _focusSearch() => _searchFocus.requestFocus();
+
   Future<void> _doSearch(String key) async {
     if (key.trim().isEmpty) return;
     _syncSelected();
@@ -201,24 +206,77 @@ class _SearchPageState extends State<SearchPage> {
         titleSpacing: 0,
         title: Row(
           children: [
+            // 框体收成一颗带底色的胶囊：原来 TextField 平铺整行、无边无距，
+            // 看着不像输入框，点哪儿都像在点标题栏
             Expanded(
-              child: TextField(
-                controller: _controller,
-                onSubmitted: _doSearch,
-                textInputAction: TextInputAction.search,
-                decoration: const InputDecoration(
-                  hintText: '输入书名/作者搜索',
-                  border: InputBorder.none,
+              child: Container(
+                margin: const EdgeInsets.only(left: 12, right: 4, top: 10, bottom: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: TextField(
+                  controller: _controller,
+                  focusNode: _searchFocus,
+                  onSubmitted: _doSearch,
+                  textInputAction: TextInputAction.search,
+                  style: const TextStyle(fontSize: 15),
+                  decoration: const InputDecoration(
+                    isCollapsed: true,
+                    contentPadding: EdgeInsets.symmetric(vertical: 13),
+                    hintText: '输入书名/作者搜索',
+                    border: InputBorder.none,
+                  ),
                 ),
               ),
             ),
-            IconButton(icon: const Icon(Icons.tune), tooltip: '选择书源', onPressed: _pickSources),
-            IconButton(icon: const Icon(Icons.search), onPressed: () => _doSearch(_controller.text)),
+            // IconButton 默认 48x48 命中框加内边距，两个图标之间、图标与屏幕右边
+            // 各留一大块空白，把输入框挤得没剩多少宽度
+            IconButton(
+              icon: const Icon(Icons.tune),
+              tooltip: '选择书源',
+              onPressed: _pickSources,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            ),
+            IconButton(
+              icon: const Icon(Icons.search),
+              onPressed: () => _doSearch(_controller.text),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            ),
+            const SizedBox(width: 6),
           ],
         ),
       ),
       body: _results.isEmpty
-          ? const Center(child: Text('输入书名或作者，回车搜索全部启用书源'))
+          ? GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _focusSearch,
+              // 空状态整屏都是空白，往下拉一下就该把光标送进搜索框，不用回头去够顶部那颗胶囊。
+              // 判据用累计位移而不是松手时的速度：拖够就当场聚焦，也避开测试环境里
+              // 恒为 0 的 primaryVelocity
+              onVerticalDragStart: (_) => _emptyPull = 0,
+              onVerticalDragUpdate: (d) {
+                _emptyPull += d.primaryDelta ?? 0;
+                if (_emptyPull > 32) _focusSearch();
+              },
+              child: SizedBox.expand(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Text('输入书名或作者，回车搜索全部启用书源',
+                        style: TextStyle(fontSize: 15, color: Colors.grey.shade700)),
+                    const SizedBox(height: 18),
+                    Icon(Icons.keyboard_arrow_down, size: 28, color: Colors.grey.shade500),
+                    Text('下拉或点击空白处聚焦搜索框',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                  ],
+                ),
+              ),
+            )
           : RefreshIndicator(
               onRefresh: () => _doSearch(_controller.text),
               child: ListView(
