@@ -34,5 +34,8 @@ flutter_launcher_icons:
   android: true
   ios: false
   remove_alpha_ios: true
-  adaptive_icon_background: "#065874"
-  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#EFC3D9"
+  # 前景自己按自适应安全区做过：书缩到 82%、渐变 smudge 外扩铺满画布，
+  # 再套默认的 16% 内缩会把书又压小一圈，所以显式关掉
+  adaptive_icon_foreground: "assets/icon/app_icon_adaptive_fg.png"
+  adaptive_icon_foreground_inset: 0
