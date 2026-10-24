@@ -37,6 +37,44 @@ void main() {
     expect(RuleEngine.getString(html, 'tag.li:last-child@text'), '丙');
   });
 
+  test('nth-child 只数元素、1 起算：缩进排版的页面不能选错条目', () {
+    // 真实书源页面几乎都是这种带换行缩进的排版，元素之间夹着空白文本节点。
+    // package:html 的 nth-child 按「全部子节点」0 起算，会把空白节点算进下标，
+    // 直接透传等于选出隔壁那一条（错书名/错章节比选不到更坏）。
+    const html = '''
+<ul>
+  <li>甲</li>
+  <li>乙</li>
+  <li>丙</li>
+  <li>丁</li>
+</ul>''';
+    expect(RuleEngine.getString(html, 'tag.li:nth-child(2)@text'), '乙');
+    expect(RuleEngine.getString(html, 'tag.li:nth-child(3)@text'), '丙');
+    expect(RuleEngine.getString(html, 'tag.li:nth-child(5)@text'), '');
+    expect(RuleEngine.getStringList(html, 'tag.li:nth-child(odd)@text'), ['甲', '丙']);
+    expect(RuleEngine.getStringList(html, 'tag.li:nth-child(even)@text'), ['乙', '丁']);
+    expect(RuleEngine.getStringList(html, 'tag.li:nth-child(2n+1)@text'), ['甲', '丙']);
+    expect(RuleEngine.getStringList(html, 'tag.li:nth-child(2n)@text'), ['乙', '丁']);
+    expect(RuleEngine.getStringList(html, 'tag.li:nth-child(-n+2)@text'), ['甲', '乙']);
+    expect(RuleEngine.getString(html, 'tag.li:nth-last-child(1)@text'), '丁');
+    expect(RuleEngine.getString(html, 'tag.li:nth-last-child(2)@text'), '丙');
+    // nth 挂在前一段时无法保证下标算在它自己的父节点上，维持原样（不接管、也不误报）
+    expect(RuleEngine.getStringList(html, 'tag.li:nth-child(2) tag.b:nth-child(1)@text'), isEmpty);
+  });
+
+  test('nth-child 走 @css: 直路时同样按元素序', () {
+    const html = '''
+<ol>
+  <li>一</li>
+  <li>二</li>
+  <li>三</li>
+</ol>''';
+    expect(RuleEngine.getString(html, '@css:li:nth-child(2)@text'), '二');
+    expect(RuleEngine.getStringList(html, '@css:li:nth-child(2n+1)@text'), ['一', '三']);
+    // nth 表达式解析不了（括号不配对）不能让整条规则抛异常
+    expect(RuleEngine.getString(html, '@css:li:nth-child(2@text'), '');
+  });
+
   test('CSS 属性选择器原生回退', () {
     const html = '<div><a href="/x/1.html">一</a><a>二</a></div>';
     final r = RuleEngine.getStringList(html, 'tag.a[href]@text');

@@ -321,7 +321,10 @@ class RuleEngine {
   static List<dynamic> _selectNative(h.Document doc, String work) {
     var css = _legadoToCss(work);
     if (css == null || css.isEmpty) return [];
-    // package:html 的 :nth-child 以 0 起算，Legado/jsoup 惯例以 1 起算，需平移
+    final nth = _takeNthChild(css);
+    if (nth != null) return _applyNthChild(doc, nth);
+    // 走到这里说明 nth 形态没被上面接管（多个 nth、或不在末尾复合段），
+    // 只能交给 package:html：它按「全部子节点」0 起算，比 jsoup 的元素序差一格，需平移
     css = css.replaceAllMapped(RegExp(r':nth-child\((\d+)\)'), (m) {
       final n = int.tryParse(m.group(1)!) ?? 0; // 超长数字直译让下面 try 兜住
       if (n <= 0) return m.group(0)!;
@@ -332,6 +335,121 @@ class RuleEngine {
     } catch (_) {
       return [];
     }
+  }
+
+  /// `:nth-child(...)` / `:nth-last-child(...)` 自己实现（jsoup/Legado 语义）。
+  /// 只接管「整条选择器恰有一个 nth 伪类，且位于最后一个复合选择段」的形态——
+  /// 这是书源里的写法（`class.booklist tag.li:nth-child(2)`），也唯一能保证
+  /// nth 下标算在所报元素自身身上的情形；其余形态返回 null 让调用方兜底。
+  static _NthChild? _takeNthChild(String css) {
+    final found = <int>[];
+    final nthEnds = <int>[];
+    var depth = 0;
+    var hasComma = false;
+    String? quote;
+    var lastCombinatorEnd = -1; // 最后一个组合符（含其后空白）结束的位置，即末段起点
+    for (var i = 0; i < css.length; i++) {
+      final c = css[i];
+      if (quote != null) {
+        if (c == quote) quote = null;
+        continue;
+      }
+      if (c == '"' || c == "'") {
+        quote = c;
+        continue;
+      }
+      if (c == '[' || c == '(') {
+        depth++;
+        continue;
+      }
+      if (c == ']' || c == ')') {
+        depth--;
+        continue;
+      }
+      if (depth != 0) continue;
+      if (c == ',') hasComma = true; // 逗号选择器组：nth 只作用于其中一组，摘出来会误伤其余组
+      if (c == '>' || c == '+' || c == '~' || c == ' ' || c == '\t' || c == '\n') {
+        var j = i;
+        while (j < css.length &&
+            (css[j] == '>' ||
+                css[j] == '+' ||
+                css[j] == '~' ||
+                css[j] == ' ' ||
+                css[j] == '\t' ||
+                css[j] == '\n')) {
+          j++;
+        }
+        lastCombinatorEnd = j - 1;
+        i = j - 1;
+        continue;
+      }
+      if (c == ':' &&
+          (css.startsWith(':nth-child(', i) || css.startsWith(':nth-last-child(', i))) {
+        final open = css.indexOf('(', i);
+        var d = 0;
+        var k = open;
+        for (; k < css.length; k++) {
+          if (css[k] == '(') {
+            d++;
+          } else if (css[k] == ')') {
+            d--;
+            if (d == 0) break;
+          }
+        }
+        if (k >= css.length) return null; // 括号不配对，交给原生解析报错走老路
+        found.add(i);
+        nthEnds.add(k);
+        i = k;
+      }
+    }
+    if (found.length != 1 || hasComma) return null;
+    final start = found[0];
+    if (lastCombinatorEnd > start) return null; // nth 不在末段，下标会算到别的元素上
+    final fromEnd = css.startsWith(':nth-last-child', start);
+    final open = css.indexOf('(', start);
+    final expr = css.substring(open + 1, nthEnds[0]).trim();
+    final ab = _parseAnPlusB(expr);
+    if (ab == null) return null;
+    final cleaned = (css.substring(0, start) + css.substring(nthEnds[0] + 1)).trim();
+    if (cleaned.isEmpty) return null;
+    return _NthChild(cleaned, fromEnd, ab[0], ab[1]);
+  }
+
+  /// `odd`/`even`/`3`/`2n`/`2n+1`/`-n+3` → [A, B]；解析不了（含溢出）返回 null。
+  static List<int>? _parseAnPlusB(String expr) {
+    final s = expr.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    if (s == 'odd') return [2, 1];
+    if (s == 'even') return [2, 0];
+    if (RegExp(r'^[+-]?\d+$').hasMatch(s)) {
+      final b = int.tryParse(s.replaceFirst('+', ''));
+      return b == null ? null : [0, b];
+    }
+    final m = RegExp(r'^([+-]?\d*)n(?:([+-]\d+))?$').firstMatch(s);
+    if (m == null) return null;
+    final aText = m.group(1)!;
+    final int? a;
+    if (aText.isEmpty || aText == '+') {
+      a = 1;
+    } else if (aText == '-') {
+      a = -1;
+    } else {
+      a = int.tryParse(aText);
+    }
+    if (a == null) return null;
+    final bText = m.group(2);
+    final b = bText == null ? 0 : int.tryParse(bText);
+    if (b == null) return null;
+    return [a, b];
+  }
+
+  static List<dynamic> _applyNthChild(h.Document doc, _NthChild nth) {
+    List<dynamic> base;
+    try {
+      base = doc.querySelectorAll(nth.css).toList();
+    } catch (_) {
+      return [];
+    }
+    return base.where((e) => e is h.Element && nth.matches(e)).toList();
   }
 
   static String? _legadoToCss(String work) {
@@ -505,6 +623,8 @@ class RuleEngine {
   }
 
   static List<dynamic> _cssSelectAll(h.Document doc, String css) {
+    final nth = _takeNthChild(css);
+    if (nth != null) return _applyNthChild(doc, nth);
     try {
       return doc.querySelectorAll(css).toList();
     } catch (_) {
@@ -716,5 +836,32 @@ class ContentAnalyzer {
     } catch (_) {
       return false;
     }
+  }
+}
+
+/// 摘掉 nth 伪类后的选择器 + 该伪类对应的元素序号判据（jsoup/Legado 语义：只数元素、1 起算）。
+class _NthChild {
+  final String css;
+  final bool fromEnd;
+  final int a;
+  final int b;
+  _NthChild(this.css, this.fromEnd, this.a, this.b);
+
+  bool matches(h.Element el) {
+    final parent = el.parent;
+    if (parent == null) return false;
+    var count = 0;
+    var index = 0; // 1 起算的元素序号
+    for (final child in parent.nodes) {
+      if (child is! h.Element) continue;
+      count++;
+      if (identical(child, el)) index = count;
+    }
+    if (index == 0) return false;
+    final k = fromEnd ? count - index + 1 : index;
+    final d = k - b;
+    if (a == 0) return d == 0;
+    if (d % a.abs() != 0) return false;
+    return a > 0 ? d >= 0 : d <= 0;
   }
 }

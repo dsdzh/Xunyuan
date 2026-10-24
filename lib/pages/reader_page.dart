@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import '../core/book_source_engine.dart';
 import '../core/chapter_paginator.dart';
+import '../core/last_page_intent.dart';
 import '../models/book_source.dart';
 import '../services/storage_service.dart';
 import '../state/app_state.dart';
@@ -63,7 +64,7 @@ class _ReaderPageState extends State<ReaderPage>
   int _currentChapter = 0;
   int _readPage = 0;
   // 向后翻章时页数尚未知，置位后在 LayoutBuilder 拿到 pages 时落到最后一页
-  bool _pendingLastPage = false;
+  final LastPageIntent _lastPage = LastPageIntent();
   // 翻页模式跳章代数：仅最新一次加载可落地，防目录连点旧请求覆盖新章
   int _pagedEpoch = 0;
 
@@ -475,8 +476,8 @@ class _ReaderPageState extends State<ReaderPage>
       _chapterParagraphs = paras;
       _readPage = 0;
       // 跳章没有翻页动画、不会逐帧重建，这里的 _progress 若不同步就会把上一章的页内比例
-      // 存成断点：向后翻章由 _pendingLastPage 落到末页，其余从首页开始
-      _progress = _pendingLastPage ? 1.0 : 0.0;
+      // 存成断点：向后翻章由 _lastPage 落到末页，其余从首页开始
+      _progress = _lastPage.matches(idx) ? 1.0 : 0.0;
       _turnFrom = null;
     });
   }
@@ -484,7 +485,7 @@ class _ReaderPageState extends State<ReaderPage>
   // ---------- 跳转 ----------
 
   void _jumpToChapter(int i) {
-    _pendingLastPage = false;
+    _lastPage.clear();
     if (_scrollMode) {
       setState(() {
         _currentChapter = i;
@@ -688,9 +689,8 @@ class _ReaderPageState extends State<ReaderPage>
                       ),
                     ),
                   );
-              if (_pendingLastPage) {
+              if (_lastPage.take(_currentChapter)) {
                 _readPage = pages.isEmpty ? 0 : pages.length - 1;
-                _pendingLastPage = false;
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (mounted) setState(() {});
                 });
@@ -976,7 +976,7 @@ class _ReaderPageState extends State<ReaderPage>
     if (target < 0) {
       if (_currentChapter > 0) {
         // 上一章：落到最后一页，可逐页往回看（页数在 LayoutBuilder 拿到分页后才知）
-        _pendingLastPage = true;
+        _lastPage.request(_currentChapter - 1);
         unawaited(_loadChapterForPaged(_currentChapter - 1));
       }
       return;

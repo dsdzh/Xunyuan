@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -9,10 +11,17 @@ import '../models/book_source.dart';
 import '../services/storage_service.dart';
 
 class SourceState extends ChangeNotifier {
+  /// [checkerFactory] 只给单测注入假探测器，产品代码走默认构造。
+  SourceState({SourceHealthChecker Function()? checkerFactory})
+      : _newChecker = checkerFactory ?? SourceHealthChecker.new;
+
   final List<BookSource> sources = [];
   final Map<String, SourceHealth> health = {};
-  int _healthJobs = 0;
-  bool get healthChecking => _healthJobs > 0;
+  final SourceHealthChecker Function() _newChecker;
+  final List<BookSource> _healthQueue = [];
+  final Set<String> _healthQueued = {};
+  int _healthWorkers = 0;
+  bool get healthChecking => _healthWorkers > 0;
 
   List<BookSource> get enabledNovelSources =>
       sources.where((s) => s.enabled && s.isNovel).toList();
@@ -67,34 +76,46 @@ class SourceState extends ChangeNotifier {
 
   String exportAll() => StorageService.instance.exportAllSources();
 
-  /// 健康度检测：并发 3 路逐个探测，结果实时刷新并持久化。
+  /// 健康度检测：全局共享一个 3 路 worker 池 + 按源去重的待检队列。
+  /// 早先是全局互斥（`if (在跑) return;`），批量检测期间点单源「重新检测此书源」
+  /// 会被静丢掉——对话框已经关了，什么都没发生。
   Future<void> checkHealth(List<BookSource> targets) async {
-    // 全局互斥：单源重测可无限叠挂会让并发失控（3N 路探测）
-    if (_healthJobs > 0) return;
-    _healthJobs++;
+    for (final s in targets) {
+      if (s.bookSourceUrl.isEmpty) continue;
+      if (!_healthQueued.add(s.bookSourceUrl)) continue; // 同一源排到了就不重复探
+      _healthQueue.add(s);
+    }
+    if (_healthQueue.isEmpty) return;
     notifyListeners();
+    // spawn 上限取当前队列长度：worker 在首个 await 之前会同步吃掉一个源，
+    // 按队列长度封顶才不会在队列已空时反复起落 worker
+    final spawn = math.min(3 - _healthWorkers, _healthQueue.length);
+    for (var i = 0; i < spawn; i++) {
+      _healthWorkers++;
+      unawaited(_healthWorker());
+    }
+  }
+
+  Future<void> _healthWorker() async {
+    final checker = _newChecker();
     try {
-      final checker = SourceHealthChecker();
-      final queue = List<BookSource>.from(targets);
-      Future<void> worker() async {
-        while (queue.isNotEmpty) {
-          final s = queue.removeAt(0);
-          try {
-            final h = await checker.check(s);
-            // 检测期间源被删除则丢弃结果，防止已删源的健康度"复活"
-            if (!StorageService.instance.sourceExists(s.bookSourceUrl)) continue;
-            health[s.bookSourceUrl] = h;
-            await StorageService.instance.putSourceHealth(s.bookSourceUrl, h.toJson());
-            notifyListeners();
-          } catch (_) {
-            // 单源写盘失败不拖垮整个队列
-          }
+      while (_healthQueue.isNotEmpty) {
+        final s = _healthQueue.removeAt(0);
+        try {
+          final h = await checker.check(s);
+          // 检测期间源被删除则丢弃结果，防止已删源的健康度"复活"
+          if (!StorageService.instance.sourceExists(s.bookSourceUrl)) continue;
+          health[s.bookSourceUrl] = h;
+          await StorageService.instance.putSourceHealth(s.bookSourceUrl, h.toJson());
+          notifyListeners();
+        } catch (_) {
+          // 单源写盘失败不拖垮整个队列
+        } finally {
+          _healthQueued.remove(s.bookSourceUrl);
         }
       }
-
-      await Future.wait([worker(), worker(), worker()]);
     } finally {
-      _healthJobs--;
+      _healthWorkers--;
       notifyListeners();
     }
   }
