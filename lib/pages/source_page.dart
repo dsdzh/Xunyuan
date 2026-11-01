@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../core/source_health.dart';
+import '../core/source_link.dart';
 import '../models/book_source.dart';
 import '../state/app_state.dart';
 import 'search_page.dart';
@@ -27,6 +28,11 @@ class _SourcePageState extends State<SourcePage> {
   /// 监听回调读这份缓存值：阅读页/详情页压在上面时不抢弹窗
   bool _routeIsCurrent = true;
 
+  /// 归 State 管，而不是弹窗一关就 dispose：`showDialog` 的 Future 在点下「导入」
+  /// 那一刻就完成，退场动画还要再重建弹窗子树若干帧，
+  /// 提前释放会让里面的 TextField 用上已 dispose 的 controller（实测直接抛断言）。
+  final TextEditingController _urlInput = TextEditingController();
+
   @override
   void initState() {
     super.initState();
@@ -37,6 +43,7 @@ class _SourcePageState extends State<SourcePage> {
 
   @override
   void dispose() {
+    _urlInput.dispose();
     _watched?.removeListener(_onHealthChanged);
     super.dispose();
   }
@@ -126,36 +133,47 @@ class _SourcePageState extends State<SourcePage> {
   }
 
   Future<void> _importFromUrl(BuildContext context) async {
-    final controller = TextEditingController();
-    final url = await showDialog<String>(
+    _urlInput.clear();
+    final pasted = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('从 URL 导入书源'),
         content: TextField(
-          controller: controller,
+          controller: _urlInput,
           autofocus: true,
           keyboardType: TextInputType.url,
-          decoration: const InputDecoration(hintText: 'https://.../bookSource.json'),
+          decoration: const InputDecoration(hintText: '链接、分享文案或整份书源 JSON'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text), child: const Text('导入')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, _urlInput.text), child: const Text('导入')),
         ],
       ),
     );
-    controller.dispose();
-    if (url == null || url.trim().isEmpty) return;
+    if (pasted == null || pasted.trim().isEmpty) return;
     if (!context.mounted) return;
+    final parsed = parsePastedSource(pasted);
+    if (parsed.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('这段文字里没有链接，也不是书源内容。'
+              '可以粘 http(s) 链接、带链接的分享文案，或改用「从剪贴板导入」整份 JSON')));
+      return;
+    }
     final state = context.read<SourceState>();
     try {
-      final r = await state.importFromUrl(url);
+      final body = parsed.inlineBody;
+      final url = parsed.url;
+      final r = body != null
+          ? await state.importText(body)
+          : await state.importFromUrl(url!);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(r.isEmpty ? r.summary : '导入完成：${r.summary}')));
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('导入失败: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('导入失败: ${parsed.url ?? '书源内容'} — $e')));
       }
     }
   }
