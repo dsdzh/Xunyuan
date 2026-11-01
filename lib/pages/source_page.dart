@@ -139,6 +139,35 @@ class SourcePage extends StatelessWidget {
     unawaited(state.checkHealth(targets));
   }
 
+  Future<void> _deleteDeadSources(BuildContext context, SourceState state) async {
+    final dead = state.deadSources;
+    if (dead.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('没有检测为「不可用」的书源，可先跑一次健康度检测')));
+      return;
+    }
+    final names = dead.take(8).map((s) => s.bookSourceName).join('、');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('删除 ${dead.length} 个不可用书源？'),
+        content: Text('$names${dead.length > 8 ? ' 等' : ''}\n\n'
+            '只删健康度检测明确判定为「不可用」的书源；'
+            '未检测、仅搜索、目录缺正文的都不会动。删除后无法恢复，需要时可重新导入。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          FilledButton.tonal(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
+        ],
+      ),
+    );
+    if (ok != true || !context.mounted) return;
+    final removed = await state.removeDeadSources();
+    if (context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已删除 $removed 个不可用书源')));
+    }
+  }
+
   Widget _healthBadge(BuildContext context, SourceState state, BookSource s) {
     final h = state.health[s.bookSourceUrl];
     if (h == null) {
@@ -152,11 +181,14 @@ class SourcePage extends StatelessWidget {
             )
           : const SizedBox.shrink();
     }
+    // 徽章的「不可用」必须严格等于 HealthLevel.dead（探测明确判死的），批量删除才敢照它下手；
+    // 脏记录（level 读不出）单列成「记录异常」，别让它混进可删的那一堆
     final (color, label) = switch (h.level) {
       HealthLevel.ok => (Colors.green, '可用'),
       HealthLevel.searchOnly => (Colors.orange, '仅搜索'),
       HealthLevel.tocNoContent => (Colors.deepOrange, '缺正文'),
-      _ => (Colors.red, '不可用'),
+      HealthLevel.dead => (Colors.red, '不可用'),
+      _ => (Colors.grey, '记录异常'),
     };
     return Padding(
       padding: const EdgeInsets.only(right: 4),
@@ -169,7 +201,8 @@ class SourcePage extends StatelessWidget {
             color: color.withValues(alpha: .15),
             borderRadius: BorderRadius.circular(6),
           ),
-          child: Text(label, style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
+          child: Text(label,
+              style: TextStyle(fontSize: 12, color: color, fontWeight: FontWeight.w600)),
         ),
       ),
     );
@@ -218,6 +251,8 @@ class SourcePage extends StatelessWidget {
                   _exportAll(context);
                 case 'health':
                   _checkHealthAll(context);
+                case 'cleanup':
+                  _deleteDeadSources(context, state);
               }
             },
             itemBuilder: (_) => [
@@ -229,6 +264,15 @@ class SourcePage extends StatelessWidget {
                 value: 'health',
                 enabled: !state.healthChecking,
                 child: Text(state.healthChecking ? '健康度检测中…' : '检测书源健康度'),
+              ),
+              PopupMenuItem(
+                value: 'cleanup',
+                enabled: !state.healthChecking,
+                // 一条也没有也留着入口：用户点了才知道"要先跑健康度检测"，
+                // 藏起来会让这个功能看起来不存在
+                child: Text(state.deadSources.isEmpty
+                    ? '删除不可用书源'
+                    : '删除不可用书源（${state.deadSources.length}）'),
               ),
             ],
           ),

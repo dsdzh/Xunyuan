@@ -26,6 +26,11 @@ class SourceState extends ChangeNotifier {
   List<BookSource> get enabledNovelSources =>
       sources.where((s) => s.enabled && s.isNovel).toList();
 
+  /// 探测明确判死（level==dead）的源。未检测、脏记录都不算，
+  /// 书源页的红色「不可用」徽章与此同口径，批量删除才不会出现"对话框 3 个、列表红标 5 个"。
+  List<BookSource> get deadSources =>
+      sources.where((s) => health[s.bookSourceUrl]?.level == HealthLevel.dead).toList();
+
   Future<void> load() async {
     sources
       ..clear()
@@ -72,6 +77,18 @@ class SourceState extends ChangeNotifier {
     await StorageService.instance.removeSource(url);
     await StorageService.instance.removeSourceHealth(url);
     await load();
+  }
+
+  /// 批量删除不可用书源。逐条走 [remove] 会把 `load()`（整库重建 + 逐源读健康度）跑 N 遍，
+  /// 一键清理时能明显卡住，所以这里删完只刷新一次。返回实际删除条数。
+  Future<int> removeDeadSources() async {
+    final targets = deadSources;
+    for (final s in targets) {
+      await StorageService.instance.removeSource(s.bookSourceUrl);
+      await StorageService.instance.removeSourceHealth(s.bookSourceUrl);
+    }
+    if (targets.isNotEmpty) await load();
+    return targets.length;
   }
 
   String exportAll() => StorageService.instance.exportAllSources();
