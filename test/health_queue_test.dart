@@ -49,14 +49,19 @@ void main() {
     );
     await StorageService.instance.init();
     for (final url in ['https://a/1', 'https://b/2', 'https://c/3', 'https://d/4']) {
-      await StorageService.instance
-          .saveSource(BookSource.fromJson({'bookSourceUrl': url, 'bookSourceName': url}));
+      await StorageService.instance.saveSource(BookSource.fromJson({
+        'bookSourceUrl': url,
+        'bookSourceName': url,
+        // 带一条能真发出去的规则：没有可跑规则的源会落进"不可用"口径，
+        // 这个测试要的是"探测结果"，不该被规则缺失搅混数字
+        'searchUrl': '/search?kw={{key}}',
+      }));
     }
     started = [];
     release = Completer<void>();
     state = SourceState(
         checkerFactory: () => _FakeChecker(started, release, levels: levels));
-    // deadSources 是从 state.sources 里筛的，不 load 进来就是空列表
+    // unusableSources 是从 state.sources 里筛的，不 load 进来就是空列表
     await state.load();
   }
 
@@ -124,13 +129,13 @@ void main() {
       'https://c/3': HealthLevel.searchOnly,
     });
     await state.checkHealth([src('https://a/1'), src('https://b/2'), src('https://c/3')]);
-    expect(state.takeDeadNotice(), -1); // 还在跑，不能提前提示
+    expect(state.takeUnusableNotice(), -1); // 还在跑，不能提前提示
 
     release.complete();
     await waitIdle();
-    expect(state.deadSources.length, 2); // 「仅搜索」不算不可用
-    expect(state.takeDeadNotice(), 2); // 数字与 deadSources 同口径
-    expect(state.takeDeadNotice(), -1); // 取过即清，不会每次刷新都弹
+    expect(state.unusableSources.length, 2); // 「仅搜索」不算不可用
+    expect(state.takeUnusableNotice(), 2); // 数字与 unusableSources 同口径
+    expect(state.takeUnusableNotice(), -1); // 取过即清，不会每次刷新都弹
   });
 
   test('整轮没有死源就不提示', () async {
@@ -138,13 +143,13 @@ void main() {
     await state.checkHealth([src('https://a/1'), src('https://b/2')]);
     release.complete();
     await waitIdle();
-    expect(state.takeDeadNotice(), -1);
+    expect(state.takeUnusableNotice(), -1);
   });
 
   test('什么都没探测成就不提示：一条结果都没记下，谈不上「测到不可用」', () async {
     await setUpState(levels: {'https://a/1': HealthLevel.dead});
     await state.checkHealth([]); // 空目标直接返回
-    expect(state.takeDeadNotice(), -1);
+    expect(state.takeUnusableNotice(), -1);
   });
 
   test('单源重测跑完也提示，数字含上一轮遗留的死源', () async {
@@ -152,11 +157,11 @@ void main() {
     await state.checkHealth([src('https://a/1'), src('https://b/2')]);
     release.complete();
     await waitIdle();
-    expect(state.takeDeadNotice(), 2);
+    expect(state.takeUnusableNotice(), 2);
 
     started.clear();
     await state.checkHealth([src('https://a/1')]); // 探测门已开，这一轮立刻跑完
     await waitIdle();
-    expect(state.takeDeadNotice(), 2); // a 重测仍死，b 的死记录还在 → 该删的还是 2 个
+    expect(state.takeUnusableNotice(), 2); // a 重测仍死，b 的死记录还在 → 该删的还是 2 个
   });
 }

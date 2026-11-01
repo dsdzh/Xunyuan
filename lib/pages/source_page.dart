@@ -47,13 +47,13 @@ class _SourcePageState extends State<SourcePage> {
   void _onHealthChanged() {
     final state = _watched;
     if (state == null || _deadPromptOpen || !_routeIsCurrent) return;
-    final n = state.takeDeadNotice();
+    final n = state.takeUnusableNotice();
     if (n <= 0) return;
     _deadPromptOpen = true;
     // notifyListeners 可能正处在遍历监听者的中途，插路由要等本帧画完
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
-        if (mounted) await _deleteDeadSources(context, state);
+        if (mounted) await _deleteUnusableSources(context, state);
       } finally {
         _deadPromptOpen = false;
       }
@@ -179,21 +179,23 @@ class _SourcePageState extends State<SourcePage> {
     unawaited(state.checkHealth(targets));
   }
 
-  Future<void> _deleteDeadSources(BuildContext context, SourceState state) async {
-    final dead = state.deadSources;
-    if (dead.isEmpty) {
+  Future<void> _deleteUnusableSources(BuildContext context, SourceState state) async {
+    final targets = state.unusableSources;
+    if (targets.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('没有检测为「不可用」的书源，可先跑一次健康度检测')));
+          const SnackBar(content: Text('没有「不可用」的书源：判死的、关着的、没规则的一个都没有')));
       return;
     }
-    final names = dead.take(8).map((s) => s.bookSourceName).join('、');
+    final counts = state.unusableCounts;
+    final names = targets.take(8).map((s) => s.bookSourceName).join('、');
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('删除 ${dead.length} 个不可用书源？'),
-        content: Text('$names${dead.length > 8 ? ' 等' : ''}\n\n'
-            '只删健康度检测明确判定为「不可用」的书源；'
-            '未检测、仅搜索、目录缺正文的都不会动。删除后无法恢复，需要时可重新导入。'),
+        title: Text('删除 ${targets.length} 个不可用书源？'),
+        content: Text('${counts.entries.map((e) => '${e.key} ${e.value} 个').join('\n')}\n\n'
+            '$names${targets.length > 8 ? ' 等' : ''}\n\n'
+            '是真删：直接从书源列表里移除，不是把开关关掉。'
+            '删除后无法恢复，需要时可重新导入同一份书源文件。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           FilledButton.tonal(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
@@ -201,7 +203,7 @@ class _SourcePageState extends State<SourcePage> {
       ),
     );
     if (ok != true || !context.mounted) return;
-    final removed = await state.removeDeadSources();
+    final removed = await state.removeUnusableSources();
     if (context.mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text('已删除 $removed 个不可用书源')));
@@ -221,8 +223,9 @@ class _SourcePageState extends State<SourcePage> {
             )
           : const SizedBox.shrink();
     }
-    // 徽章的「不可用」必须严格等于 HealthLevel.dead（探测明确判死的），批量删除才敢照它下手；
-    // 脏记录（level 读不出）单列成「记录异常」，别让它混进可删的那一堆
+    // 徽章只报探测结果，「不可用」严格等于 HealthLevel.dead；
+    // 清理的口径比它宽（还含关着的、没规则的），所以确认框里是分档列条数的，不拿徽章数当删除数。
+    // 脏记录（level 读不出）单列成「记录异常」，不当成判死
     final (color, label) = switch (h.level) {
       HealthLevel.ok => (Colors.green, '可用'),
       HealthLevel.searchOnly => (Colors.orange, '仅搜索'),
@@ -293,7 +296,7 @@ class _SourcePageState extends State<SourcePage> {
                 case 'health':
                   _checkHealthAll(context);
                 case 'cleanup':
-                  _deleteDeadSources(context, state);
+                  _deleteUnusableSources(context, state);
               }
             },
             itemBuilder: (_) => [
@@ -309,11 +312,11 @@ class _SourcePageState extends State<SourcePage> {
               PopupMenuItem(
                 value: 'cleanup',
                 enabled: !state.healthChecking,
-                // 一条也没有也留着入口：用户点了才知道"要先跑健康度检测"，
+                // 一条也没有也留着入口：用户点了才知道"当前没有用不了的源"，
                 // 藏起来会让这个功能看起来不存在
-                child: Text(state.deadSources.isEmpty
+                child: Text(state.unusableSources.isEmpty
                     ? '删除不可用书源'
-                    : '删除不可用书源（${state.deadSources.length}）'),
+                    : '删除不可用书源（${state.unusableSources.length}）'),
               ),
             ],
           ),

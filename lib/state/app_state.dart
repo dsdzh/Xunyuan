@@ -22,25 +22,58 @@ class SourceState extends ChangeNotifier {
   final Set<String> _healthQueued = {};
   int _healthWorkers = 0;
   int _healthProbed = 0; // 本轮实际记下几条结果，跑完才有依据提示"检测到 N 个"
-  int _deadNotice = -1; // 一次性提示位，-1 = 没有待提示
+  int _unusableNotice = -1; // 一次性提示位，-1 = 没有待提示
   bool get healthChecking => _healthWorkers > 0;
 
-  /// 取走「本轮检测跑完，当前有 N 个不可用书源」的提示，取过即清。
+  /// 取走「本轮检测跑完，当前有 N 个用不了的书源」的提示，取过即清。
   /// 必须一次性：页面是监听 notifyListeners 的，常驻值会让之后每次刷新都弹一遍。
-  /// N 用的是 [deadSources] 同一口径，所以提示里的数字就是点删除真会删掉的条数。
-  int takeDeadNotice() {
-    final n = _deadNotice;
-    _deadNotice = -1;
+  /// N 用的是 [unusableSources] 同一口径，所以提示里的数字就是点删除真会删掉的条数。
+  int takeUnusableNotice() {
+    final n = _unusableNotice;
+    _unusableNotice = -1;
     return n;
   }
 
   List<BookSource> get enabledNovelSources =>
       sources.where((s) => s.enabled && s.isNovel).toList();
 
-  /// 探测明确判死（level==dead）的源。未检测、脏记录都不算，
-  /// 书源页的红色「不可用」徽章与此同口径，批量删除才不会出现"对话框 3 个、列表红标 5 个"。
-  List<BookSource> get deadSources =>
-      sources.where((s) => health[s.bookSourceUrl]?.level == HealthLevel.dead).toList();
+  /// 一个源"用不了"落在哪一档；返回 null 表示它还有救。
+  /// 顺序即优先级：判死的不用再谈开关，关着的也不必看规则。
+  ///
+  /// 光删判死的会留个死循环：健康度检测只探「已启用」的源，
+  /// 而那些从书源文件里就带着 `enabled:false`（多为需要 JS 规则）的源
+  /// 永远探测不到 → 永远不算"不可用" → 永远删不掉，列表里就只有一排关着的灰源。
+  static String? _unusableReasonOf(BookSource s, Map<String, SourceHealth> health) {
+    if (health[s.bookSourceUrl]?.level == HealthLevel.dead) return '检测判定不可用';
+    if (!s.enabled) return '处于关闭状态';
+    if (!_hasRunnableRule(s)) return '没有可用的搜索/发现规则';
+    return null;
+  }
+
+  /// 规则里只有 `@js:` / `<js>` 时等于发不出请求（本 App 不跑 JS），不算"有规则"
+  static bool _hasRunnableRule(BookSource s) {
+    bool usable(String? url) {
+      final t = (url ?? '').trim();
+      if (t.isEmpty) return false;
+      return !t.contains('@js:') && !t.contains('<js>');
+    }
+
+    return usable(s.searchUrl) || usable(s.exploreUrl);
+  }
+
+  /// 该删的源：判死 ∪ 关着 ∪ 没有可跑规则的。与 [unusableCounts] 同一口径。
+  List<BookSource> get unusableSources =>
+      sources.where((s) => _unusableReasonOf(s, health) != null).toList();
+
+  /// 分档条数（按上面优先级归类，一个源只计一档），删除确认框照实列给用户看
+  Map<String, int> get unusableCounts {
+    final m = <String, int>{};
+    for (final s in sources) {
+      final r = _unusableReasonOf(s, health);
+      if (r != null) m[r] = (m[r] ?? 0) + 1;
+    }
+    return m;
+  }
 
   Future<void> load() async {
     sources
@@ -101,10 +134,11 @@ class SourceState extends ChangeNotifier {
     await load();
   }
 
-  /// 批量删除不可用书源。逐条走 [remove] 会把 `load()`（整库重建 + 逐源读健康度）跑 N 遍，
-  /// 一键清理时能明显卡住，所以这里删完只刷新一次。返回实际删除条数。
-  Future<int> removeDeadSources() async {
-    final targets = deadSources;
+  /// 批量删除用不了的书源（[unusableSources] 全口径）。逐条走 [remove] 会把
+  /// `load()`（整库重建 + 逐源读健康度）跑 N 遍，一键清理时能明显卡住，所以删完只刷新一次。
+  /// 返回实际删除条数。
+  Future<int> removeUnusableSources() async {
+    final targets = unusableSources;
     for (final s in targets) {
       await StorageService.instance.removeSource(s.bookSourceUrl);
       await StorageService.instance.removeSourceHealth(s.bookSourceUrl);
@@ -160,8 +194,8 @@ class SourceState extends ChangeNotifier {
       // 这时候问删不删最不突兀
       if (_healthWorkers == 0) {
         if (_healthProbed > 0) {
-          final dead = deadSources.length;
-          if (dead > 0) _deadNotice = dead; // 没有死源就留 -1，取用侧不必再判 0
+          final n = unusableSources.length;
+          if (n > 0) _unusableNotice = n; // 一个都没有就留 -1，取用侧不必再判 0
         }
         _healthProbed = 0;
       }
