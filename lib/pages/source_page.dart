@@ -65,10 +65,7 @@ class _SourcePageState extends State<SourcePage> {
     final r = await state.importText(text);
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-          content: Text(r.isEmpty
-              ? '${r.summary}（需为 Legado 阅读3.0 JSON 格式）'
-              : '导入完成：${r.summary}')),
+      SnackBar(content: Text(r.isEmpty ? r.summary : '导入完成：${r.summary}')),
     );
   }
 
@@ -153,10 +150,8 @@ class _SourcePageState extends State<SourcePage> {
     try {
       final r = await state.importFromUrl(url);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(r.isEmpty
-                ? '${r.summary}（链接内容需为 Legado 阅读3.0 JSON 格式）'
-                : '导入完成：${r.summary}')));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(r.isEmpty ? r.summary : '导入完成：${r.summary}')));
       }
     } catch (e) {
       if (context.mounted) {
@@ -333,7 +328,7 @@ class _SourcePageState extends State<SourcePage> {
                   const SizedBox(height: 12),
                   const Text('还没有书源，点击右上角导入'),
                   const SizedBox(height: 6),
-                  const Text('支持 Legado（阅读3.0）书源 JSON 格式', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  const Text('支持 Legado（阅读3.0）书源 JSON 及常见转换格式', style: TextStyle(fontSize: 12, color: Colors.grey)),
                   const SizedBox(height: 16),
                   FilledButton.icon(
                     icon: const Icon(Icons.content_paste_go),

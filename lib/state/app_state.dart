@@ -54,19 +54,30 @@ class SourceState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 导入书源文本（JSON 数组 / JSONL / 常见导出包装）。返回新增/更新/跳过统计。
+  /// 导入书源文本。格式尽量宽容（数组/JSONL/任意包装键/base64/宽松 JSON/字段别名，
+  /// 见 `core/source_format_adapter.dart`），返回新增/更新/跳过统计。
   Future<ImportResult> importText(String text) async {
-    final list = parseBookSources(text);
+    final parsed = parseBookSourcesDetailed(text);
+    final list = parsed.sources;
     // 上限防御：异常/恶意大文件不致撑爆存储与内存
     var overCap = 0;
     if (list.length > 10000) {
       overCap = list.length - 10000;
       list.removeRange(10000, list.length);
     }
-    if (list.isEmpty) return ImportResult(skipped: overCap);
+    final skipped = parsed.dropped + overCap;
+    if (list.isEmpty) {
+      return ImportResult(
+          skipped: skipped, bookShares: parsed.bookShares, truncated: parsed.truncated);
+    }
     final r = await StorageService.instance.importSources(list);
     await load();
-    return ImportResult(added: r.added, updated: r.updated, skipped: r.skipped + overCap);
+    return ImportResult(
+        added: r.added,
+        updated: r.updated,
+        skipped: r.skipped + skipped,
+        bookShares: parsed.bookShares,
+        truncated: parsed.truncated);
   }
 
   Future<ImportResult> importFromUrl(String url) async {

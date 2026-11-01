@@ -1,4 +1,4 @@
-import 'dart:convert';
+import '../core/source_format_adapter.dart';
 
 /// Legado 风格书源数据模型。
 /// 仅保留 v1 规则引擎实际使用的字段，其余字段原样保留以便导出兼容。
@@ -56,13 +56,13 @@ class BookSource {
       bookSourceName: (j['bookSourceName'] ?? j['bookSourceUrl'] ?? '未命名书源').toString(),
       bookSourceGroup: (j['bookSourceGroup'] ?? '').toString(),
       bookSourceType: j['bookSourceType']?.toString(),
-      bookUrlPattern: j['bookUrlPattern']?.toString(),
-      searchUrl: j['searchUrl']?.toString(),
-      exploreUrl: j['exploreUrl']?.toString(),
+      bookUrlPattern: _plainText(j['bookUrlPattern']),
+      searchUrl: _plainText(j['searchUrl']),
+      exploreUrl: _plainText(j['exploreUrl']),
       enabled: j['enabled'] != false,
       customOrder: (j['customOrder'] is num) ? (j['customOrder'] as num).toInt() : 0,
-      header: j['header']?.toString(),
-      bookSourceComment: j['bookSourceComment']?.toString(),
+      header: _plainText(j['header']),
+      bookSourceComment: _plainText(j['bookSourceComment']),
       lastUpdateTime: (j['lastUpdateTime'] is num) ? (j['lastUpdateTime'] as num).toInt() : null,
       weight: j['weight']?.toString(),
       ruleBookInfo: BookInfoRule.fromJson(m(j['ruleBookInfo'])),
@@ -72,6 +72,14 @@ class BookSource {
       ruleContent: ContentRule.fromJson(m(j['ruleContent'])),
       raw: j,
     );
+  }
+
+  /// 这些字段只该是文本。以前直接 `toString()`，遇到对象/数组形态的书源
+  /// （header 是 `{"User-Agent":"x"}`、searchUrl 是 `[{url:..}]`）会存成 Dart 的
+  /// `{User-Agent: x}` 字面量，下游再也解析不回来。非文本一律当没有。
+  static String? _plainText(dynamic v) {
+    if (v == null || v is Map || v is List) return null;
+    return v.toString();
   }
 
   Map<String, dynamic> toJson() => raw;
@@ -258,69 +266,56 @@ class ContentRule {
       );
 }
 
-/// 解析书源导入文本：支持顶层 JSON 数组、JSONL（每行一个对象），以及嵌套在
-/// `{"books":[...]}` / `{"data":[...]}` / `{"bookSourceList":[...]}` 等常见
-/// 导出包装里的数组。按 bookSourceUrl 去重（保留后出现的），丢弃缺 URL / 结构
-/// 损坏的单条而不影响其余条目。
-List<BookSource> parseBookSources(String text) {
-  // 去除 UTF-8 BOM：Dart trim 不处理 U+FEFF，带 BOM 的文件会让 jsonDecode 直接抛
-  final trimmed = _stripBom(text).trim();
-  final candidates = <Map<String, dynamic>>[];
-  dynamic decoded;
-  try {
-    decoded = _jsonDecodeLoose(trimmed);
-  } catch (_) {
-    decoded = null;
-  }
-  if (decoded is List) {
-    for (final e in decoded) {
-      if (e is Map) candidates.add(e.cast<String, dynamic>());
-    }
-  } else if (decoded is Map) {
-    dynamic arr;
-    for (final key in const ['books', 'bookSourceList', 'bookSources', 'sourceList', 'sources', 'data', 'source', 'list']) {
-      if (decoded[key] is List) {
-        arr = decoded[key];
-        break;
-      }
-    }
-    if (arr is List) {
-      for (final e in arr) {
-        if (e is Map) candidates.add(e.cast<String, dynamic>());
-      }
-    } else if (decoded['bookSourceUrl'] != null) {
-      candidates.add(decoded.cast<String, dynamic>());
-    }
-  } else {
-    // JSONL：逐行解析
-    for (final line in trimmed.split(RegExp(r'\r?\n'))) {
-      final l = _stripBom(line).trim();
-      if (l.isEmpty) continue;
-      try {
-        final m = _jsonDecodeLoose(l);
-        if (m is Map && m['bookSourceUrl'] != null) candidates.add(m.cast<String, dynamic>());
-      } catch (_) {}
-    }
-  }
+/// 书源导入文本的解析结果：可用源 + 需要如实告知用户的旁落内容。
+class BookSourceParseResult {
+  final List<BookSource> sources;
 
-  // 按 URL 去重（后出现覆盖先前），并逐条宽容构建，单条损坏不拖垮整体
-  final byUrl = <String, BookSource>{};
-  for (final e in candidates) {
-    final url = (e['bookSourceUrl'] ?? '').toString();
-    if (url.isEmpty) continue;
-    try {
-      final s = BookSource.fromJson(e);
-      if (s.bookSourceUrl.isEmpty) continue;
-      byUrl[s.bookSourceUrl] = s;
-    } catch (_) {}
-  }
-  return byUrl.values.toList();
+  /// 缺 URL / 结构损坏被丢弃的条数
+  final int dropped;
+
+  /// 书籍分享码条数（不是书源，导不进来）
+  final int bookShares;
+
+  /// 内容超出深度/条目上限，后面没再看
+  final bool truncated;
+
+  const BookSourceParseResult({
+    this.sources = const [],
+    this.dropped = 0,
+    this.bookShares = 0,
+    this.truncated = false,
+  });
 }
 
-String _stripBom(String s) => s.isNotEmpty && s.codeUnitAt(0) == 0xFEFF ? s.substring(1) : s;
+/// 解析书源导入文本：顶层 JSON 数组、JSONL（每行一个对象）、任意包装键
+/// （`{"books":[...]}` / `{"code":0,"data":{"bookSourceList":[...]}}` 都能挖到）、
+/// 「书源名 → 对象」的 map 形态，外加 base64 / URL 编码 / gzip 包装与带注释、
+/// 单引号、尾逗号、裸键的宽松 JSON；字段别名统一对齐到 Legado 规范键。
+/// 按 bookSourceUrl 去重（保留后出现的），单条损坏只丢那一条。
+List<BookSource> parseBookSources(String text) => parseBookSourcesDetailed(text).sources;
 
-dynamic _jsonDecodeLoose(String text) {
-  return jsonDecode(text);
+BookSourceParseResult parseBookSourcesDetailed(String text) {
+  final report = extractSourceCandidates(text);
+  final byUrl = <String, BookSource>{};
+  var dropped = 0;
+  for (final e in report.candidates) {
+    try {
+      final s = BookSource.fromJson(e);
+      if (s.bookSourceUrl.isEmpty) {
+        dropped++;
+        continue;
+      }
+      byUrl[s.bookSourceUrl] = s;
+    } catch (_) {
+      dropped++;
+    }
+  }
+  return BookSourceParseResult(
+    sources: byUrl.values.toList(),
+    dropped: dropped,
+    bookShares: report.bookShares,
+    truncated: report.truncated,
+  );
 }
 
 /// 书源导入结果统计，用于向用户如实反馈"新增 / 更新 / 跳过"。
@@ -328,16 +323,29 @@ class ImportResult {
   final int added; // 本地原本没有、本次新建的源
   final int updated; // URL 已存在、按新内容刷新的源
   final int skipped; // 缺 URL / 结构损坏 / 写盘失败 / 超上限被丢弃的条目
-  const ImportResult({this.added = 0, this.updated = 0, this.skipped = 0});
+  final int bookShares; // 识别为书籍分享码、按书源导不进来的条数
+  final bool truncated; // 内容超出解析上限，后面没再看
+  const ImportResult(
+      {this.added = 0,
+      this.updated = 0,
+      this.skipped = 0,
+      this.bookShares = 0,
+      this.truncated = false});
   int get changed => added + updated;
   bool get isEmpty => changed == 0;
 
   String get summary {
-    if (isEmpty) return skipped > 0 ? '未导入有效书源（$skipped 条无法解析）' : '未导入有效书源';
+    if (isEmpty) {
+      if (bookShares > 0) return '内容是书籍分享码（$bookShares 条），不是书源';
+      if (skipped > 0) return '未导入有效书源（$skipped 条无法解析）';
+      return '未导入有效书源（内容需包含书源定义）';
+    }
     final parts = <String>[];
     if (added > 0) parts.add('新增 $added');
     if (updated > 0) parts.add('更新 $updated');
     if (skipped > 0) parts.add('跳过 $skipped');
+    if (bookShares > 0) parts.add('另有 $bookShares 条书籍分享码不是书源');
+    if (truncated) parts.add('内容过长，超出部分未解析');
     return parts.join('，');
   }
 }

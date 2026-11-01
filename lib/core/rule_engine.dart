@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:html/dom.dart' as h;
 import 'package:html/parser.dart' as html_parser;
 
+import 'xpath.dart';
+
 /// 规则引擎结果：可能是元素/对象列表，也可能是字符串。
 class RuleResult {
   final List<dynamic> elements;
@@ -21,7 +23,10 @@ class RuleResult {
 /// - 列表下标：`[0]`、`[1-3]`、`[last]`、`[last-2]`
 /// - 正则处理：`##pattern##replacement`（无 replacement 时为匹配提取）、`###pattern`（过滤）
 /// - JSON 模式 JSONPath 子集：`$.a.b[0]`、`$..key`、`[*]`
-/// - 不支持的规则（`@js:`、`@xpath:`）返回空并记录警告
+/// - XPath 子集：`@xpath://div[@class='item']`、`//li/a@href`、`//text()`、
+///   `[last()]`、`[position()<5]`、`[contains(@id,'x')]`、`not()`、`and`/`or`、`|`
+///   （求值在 `core/xpath.dart`，超出子集一律当不支持）
+/// - 不支持的规则（`<js>`、XPath 里超出子集的写法）返回空并记录警告
 class RuleEngine {
   static final List<String> warnings = <String>[];
   static void _warn(String w) {
@@ -136,8 +141,7 @@ class RuleEngine {
     } else if (core.startsWith('@css:')) {
       results = _cssSelectAll(_parseHtml(content), core.substring(5));
     } else if (core.startsWith('@xpath:')) {
-      _warn('暂不支持 XPath 规则: $core');
-      return [];
+      results = _xpathRule(content, core.substring(7));
     } else if (core.startsWith('@js:') || core.contains('<js>')) {
       _warn('暂不支持 JS 规则: ${core.length > 60 ? '${core.substring(0, 60)}…' : core}');
       return [];
@@ -620,6 +624,32 @@ class RuleEngine {
     final c = el.attributes['class'];
     if (c == null) return false;
     return c.split(RegExp(r'\s+')).contains(cls);
+  }
+
+  /// `@xpath:` 规则：末段的 `@attr`（Legado 习惯写 `//a@href`）与 XPath 自身的
+  /// `//a/@href` 走同一条路；认不出的形态记警告后返回空，绝不猜。
+  static List<dynamic> _xpathRule(String content, String rawExpr) {
+    var expr = rawExpr.trim();
+    String? attr;
+    final atIdx = _lastUnbracketed(expr, '@');
+    if (atIdx > 0) {
+      final maybe = expr.substring(atIdx + 1).trim();
+      if (RegExp(r'^[-\w]+$').hasMatch(maybe)) {
+        attr = maybe;
+        expr = expr.substring(0, atIdx);
+      }
+    }
+    try {
+      final nodes = evaluateXPath(_parseHtml(content), expr);
+      if (attr == null) return nodes;
+      return nodes
+          .map((e) => _getAttr(e, attr!))
+          .where((v) => v is! String || v.isNotEmpty)
+          .toList();
+    } on UnsupportedXPath {
+      _warn('暂不支持 XPath 规则: ${rawExpr.length > 60 ? '${rawExpr.substring(0, 60)}…' : rawExpr}');
+      return [];
+    }
   }
 
   static List<dynamic> _cssSelectAll(h.Document doc, String css) {

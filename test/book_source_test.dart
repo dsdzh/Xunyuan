@@ -92,7 +92,7 @@ void main() {
     test('空结果 summary', () {
       const r = ImportResult();
       expect(r.isEmpty, true);
-      expect(r.summary, '未导入有效书源');
+      expect(r.summary, '未导入有效书源（内容需包含书源定义）');
     });
 
     test('仅有跳过', () {
