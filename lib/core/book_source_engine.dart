@@ -64,23 +64,54 @@ class BookSourceEngine {
   final BookSource source;
   BookSourceEngine(this.source);
 
-  Map<String, String> get _headers {
-    if (source.header == null || source.header!.trim().isEmpty) return {};
+  /// header 字段的三种真实形态：合法 JSON 对象/数组、单引号伪 JSON
+  /// （`{'cookie':'x','User-Agent':'y'}`，转换站与手写书源都爱这么写）、
+  /// 裸文本 `User-Agent: xxx\nReferer: yyy`。
+  /// 单引号那种原先掉进裸文本分支，切出 `{'cookie'` 这种带花括号的 header 名，
+  /// dio 抛 `Invalid HTTP header field name` 把整个源打死。
+  Map<String, String> get headers {
+    final raw = source.header?.trim() ?? '';
+    if (raw.isEmpty) return {};
+    final pairs = <String, String>{};
     try {
-      final j = jsonDecode(source.header!);
-      if (j is Map) return j.map((k, v) => MapEntry(k.toString(), v.toString()));
-      if (j is List) {
+      final j = jsonDecode(raw);
+      if (j is Map) {
+        j.forEach((k, v) => pairs[k.toString()] = v?.toString() ?? '');
+      } else if (j is List) {
         // [{key:..,value:..}] 形式
-        final out = <String, String>{};
         for (final e in j) {
-          if (e is Map && e['key'] != null) out[e['key'].toString()] = (e['value'] ?? '').toString();
+          if (e is Map && e['key'] != null) pairs[e['key'].toString()] = (e['value'] ?? '').toString();
         }
-        return out;
       }
     } catch (_) {}
-    // 极常见的裸文本形态：`User-Agent: xxx\nReferer: yyy`
+    if (pairs.isEmpty) {
+      pairs.addAll(raw.startsWith('{') ? _lenientJsonPairs(raw) : _bareHeaderPairs(raw));
+    }
+    // 名字不合法的项 dio 自己会抛，值里带换行则是响应头注入，一律丢着别发出去
+    pairs.removeWhere((k, v) =>
+        k.isEmpty || !_headerNameRe.hasMatch(k) || v.contains('\n') || v.contains('\r'));
+    return pairs;
+  }
+
+  static final RegExp _headerNameRe = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+
+  /// 单引号伪 JSON：按字符串对逐对取出，键名顺带脱掉残留的引号
+  static Map<String, String> _lenientJsonPairs(String s) {
     final out = <String, String>{};
-    for (final line in source.header!.split(RegExp(r'[\r\n]+'))) {
+    for (final re in [
+      RegExp(r"'([^']+)'\s*:\s*'([^']*)'"),
+      RegExp(r'"([^"]+)"\s*:\s*"([^"]*)"'),
+    ]) {
+      for (final m in re.allMatches(s)) {
+        out[m.group(1)!.trim()] = m.group(2)!.trim();
+      }
+    }
+    return out;
+  }
+
+  static Map<String, String> _bareHeaderPairs(String s) {
+    final out = <String, String>{};
+    for (final line in s.split(RegExp(r'[\r\n]+'))) {
       final i = line.indexOf(':');
       if (i > 0) out[line.substring(0, i).trim()] = line.substring(i + 1).trim();
     }
@@ -257,7 +288,7 @@ class BookSourceEngine {
     String? charset,
     Map<String, String> headers,
   }) built) {
-    final hdrs = {..._headers, ...built.headers};
+    final hdrs = {...headers, ...built.headers};
     final method = built.method?.toUpperCase() ?? (built.body != null ? 'POST' : 'GET');
     if (method == 'POST') {
       Object bodyData = built.body ?? '';
@@ -283,17 +314,46 @@ class BookSourceEngine {
         r: source.ruleSearch as Object);
   }
 
-  /// 发现页分类：exploreUrl 形如 `名称::url&&名称2::url2`（换行分隔）
+  /// 发现页分类。exploreUrl 有两种真实写法：
+  /// 1) `名称::url&&名称2::url2`，分隔符按 Legado 是 `(&&|\n)+`（注释里一直写着支持
+  ///    `&&`，代码却只按换行切，一行多类的源会整条丢掉）；
+  /// 2) JSON 数组 `[{"title":"月票榜","url":"/rank/yuepiao/page{{page}}/","style":{…}}]`，
+  ///    起点中文、番茄这类大站源都这么写（22 个真实源里占 6 个），`url` 为空的是分组标题。
   static List<({String title, String url})> exploreCategories(BookSource source) {
-    final raw = source.exploreUrl ?? '';
-    if (raw.trim().isEmpty) return [];
+    final raw = (source.exploreUrl ?? '').trim();
+    if (raw.isEmpty || raw.startsWith('@js:') || raw.startsWith('<js>')) return [];
+    final json = _exploreFromJson(raw);
+    if (json != null) return json;
     final out = <({String title, String url})>[];
-    for (var seg in raw.split(RegExp(r'[\n]'))) {
-      seg = seg.trim();
-      if (seg.isEmpty) continue;
-      final idx = seg.indexOf('::');
+    for (final seg in raw.split(RegExp(r'(?:&&|\n)+'))) {
+      final t = seg.trim();
+      if (t.isEmpty) continue;
+      final idx = t.indexOf('::');
       if (idx <= 0) continue;
-      out.add((title: seg.substring(0, idx).trim(), url: seg.substring(idx + 2).trim()));
+      final url = t.substring(idx + 2).trim();
+      if (url.isEmpty) continue;
+      out.add((title: t.substring(0, idx).trim(), url: url));
+    }
+    return out;
+  }
+
+  /// 不是 JSON 数组写法就返回 null，交给 `名称::url` 那条路解析。
+  static List<({String title, String url})>? _exploreFromJson(String raw) {
+    if (!raw.startsWith('[')) return null;
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } catch (_) {
+      return null;
+    }
+    if (decoded is! List) return null;
+    final out = <({String title, String url})>[];
+    for (final e in decoded) {
+      if (e is! Map) continue;
+      final url = e['url']?.toString().trim() ?? '';
+      if (url.isEmpty) continue;
+      final title = e['title']?.toString().trim() ?? '';
+      out.add((title: title.isEmpty ? url : title, url: url));
     }
     return out;
   }
@@ -404,7 +464,7 @@ class BookSourceEngine {
     if (bookUrl.trim().isEmpty) {
       throw Exception('该书源未能解析出详情页链接（规则可能依赖 JS 或站方改版）');
     }
-    final resp = await _check(HttpClient.instance.get(bookUrl, headers: _headers));
+    final resp = await _check(HttpClient.instance.get(bookUrl, headers: headers));
     var body = resp.body;
     final url = resp.url;
     var isJson = ContentAnalyzer.isJsonContent(body);
@@ -451,7 +511,7 @@ class BookSourceEngine {
   }
 
   Future<List<Chapter>> toc(String tocUrl) async {
-    final resp = await _check(HttpClient.instance.get(tocUrl, headers: _headers));
+    final resp = await _check(HttpClient.instance.get(tocUrl, headers: headers));
     var body = resp.body;
     var pageUrl = resp.url;
     final rt = source.ruleToc;
@@ -469,7 +529,7 @@ class BookSourceEngine {
         if (abs == pageUrl) break;
         final PageResponse resp2;
         try {
-          resp2 = await _check(HttpClient.instance.get(abs, headers: _headers));
+          resp2 = await _check(HttpClient.instance.get(abs, headers: headers));
         } catch (_) {
           // 后续分页失败但已解析到章节：保留已有部分（与 content() 的降级一致），
           // 仅首页也没拿到时才抛出
@@ -584,7 +644,7 @@ class BookSourceEngine {
     while (url.isNotEmpty && guard++ < 20) {
       PageResponse resp;
       try {
-        resp = await _check(HttpClient.instance.get(url, headers: _headers));
+        resp = await _check(HttpClient.instance.get(url, headers: headers));
       } catch (_) {
         // 已取到部分内容时后续分页失败：保留已抓取文本
         if (buffers.isNotEmpty) break;

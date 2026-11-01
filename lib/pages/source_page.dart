@@ -280,9 +280,15 @@ class _SourcePageState extends State<SourcePage> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
           FilledButton.tonal(
-            onPressed: () {
+            onPressed: () async {
+              final state = context.read<SourceState>();
               Navigator.pop(ctx);
-              unawaited(context.read<SourceState>().checkHealth([s]));
+              final queued = await state.checkHealth([s]);
+              // 对话框已经 pop，别用它的 context 说话；排队去重命中要出声，不然点着没反应
+              if (queued == 0 && context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('「${s.bookSourceName}」正在检测中，已排在队列里')));
+              }
             },
             child: const Text('重新检测此书源'),
           ),
@@ -364,7 +370,7 @@ class _SourcePageState extends State<SourcePage> {
               separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, i) {
                 final s = state.sources[i];
-                final hasRule = (s.searchUrl?.isNotEmpty ?? false) || (s.exploreUrl?.isNotEmpty ?? false);
+                final hasRule = SourceState.hasRunnableRule(s);
                 return ListTile(
                   leading: CircleAvatar(
                     backgroundColor: s.enabled && hasRule
@@ -379,8 +385,8 @@ class _SourcePageState extends State<SourcePage> {
                       Text(
                         [
                           s.bookSourceGroup.isEmpty ? '未分组' : s.bookSourceGroup,
-                          if ((s.searchUrl ?? '').isNotEmpty) '搜索' else '无搜索',
-                          if ((s.exploreUrl ?? '').isNotEmpty) '发现',
+                          if (s.hasRunnableSearch) '搜索' else '无搜索',
+                          if (s.supportsExplore) '发现',
                           if (!s.isNovel) _typeName(s),
                         ].join(' · '),
                         style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
@@ -413,16 +419,20 @@ class _SourcePageState extends State<SourcePage> {
   }
 
   IconData _typeIcon(BookSource s) => switch (s.sourceType) {
-        1 => Icons.auto_stories_outlined,
-        2 => Icons.audiotrack,
-        3 => Icons.movie_outlined,
+        1 => Icons.audiotrack,
+        2 => Icons.image_outlined,
+        3 => Icons.download_outlined,
+        4 => Icons.movie_outlined,
         _ => Icons.menu_book_outlined,
       };
 
+  /// 顺序按 Legado `BookSource.kt` 的 `bookSourceType`（0 文本 1 音频 2 图片 3 文件 4 视频），
+  /// 第三方转换站常把 1 标成"漫画"，别跟着改回去
   String _typeName(BookSource s) => switch (s.sourceType) {
-        1 => '漫画源',
-        2 => '音频源',
-        3 => '视频源',
+        1 => '音频源',
+        2 => '图片源',
+        3 => '下载站',
+        4 => '视频源',
         _ => '小说源',
       };
 

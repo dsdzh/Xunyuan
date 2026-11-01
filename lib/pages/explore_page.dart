@@ -26,6 +26,12 @@ class _ExplorePageState extends State<ExplorePage> {
   int _loadGen = 0;
   bool _finished = false;
 
+  /// 「发现」页能用 = 书源带发现地址、作者没关掉、而且真解析得出可点的分类。
+  /// 最后一项必须有：起点中文那类 JSON 数组写法解析不出分类时，光按 `supportsExplore`
+  /// 把它列进候选，用户点进去只会看到一片空白。
+  static bool _exploreReady(BookSource s) =>
+      s.supportsExplore && BookSourceEngine.exploreCategories(s).isNotEmpty;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -34,12 +40,10 @@ class _ExplorePageState extends State<ExplorePage> {
     final ss = context.watch<SourceState>();
     final cur = _source;
     if (cur != null &&
-        ss.sources.any((s) =>
-            s.enabled && s.bookSourceUrl == cur.bookSourceUrl && (s.exploreUrl ?? '').isNotEmpty)) {
+        ss.sources.any((s) => s.enabled && s.bookSourceUrl == cur.bookSourceUrl && _exploreReady(s))) {
       return; // 当前书源仍有效
     }
-    final withExplore =
-        ss.enabledNovelSources.where((s) => (s.exploreUrl ?? '').isNotEmpty).toList();
+    final withExplore = ss.enabledNovelSources.where(_exploreReady).toList();
     if (withExplore.isEmpty) {
       _source = null;
       _categories = const [];
@@ -109,7 +113,7 @@ class _ExplorePageState extends State<ExplorePage> {
   }
 
   Future<void> _pickSource() async {
-    final sources = context.read<SourceState>().enabledNovelSources.where((s) => (s.exploreUrl ?? '').isNotEmpty).toList();
+    final sources = context.read<SourceState>().enabledNovelSources.where(_exploreReady).toList();
     if (sources.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('没有配置发现页的书源')));
       return;

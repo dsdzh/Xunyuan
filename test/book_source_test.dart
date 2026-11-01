@@ -101,4 +101,63 @@ void main() {
       expect(r.summary, '未导入有效书源（3 条无法解析）');
     });
   });
+
+  group('bookSourceType（Legado 序：0 文本 1 音频 2 图片 3 文件 4 视频）', () {
+    BookSource of(String? type) => BookSource.fromJson({
+          'bookSourceUrl': 'https://a',
+          'bookSourceName': '甲',
+          'bookSourceType': type,
+        });
+
+    test('只有 0 是小说源，缺字段按 0 处理', () {
+      expect(of(null).isNovel, true);
+      expect(of('0').isNovel, true);
+      expect(of('1').isNovel, false);
+      expect(of('4').sourceType, 4);
+      expect(of('音频').sourceType, 0); // 脏值退回 0，别抛
+    });
+  });
+
+  group('enabledExplore / 可跑规则', () {
+    BookSource src({String? searchUrl, String? exploreUrl, Object? enabledExplore}) =>
+        BookSource.fromJson({
+          'bookSourceUrl': 'https://a',
+          'bookSourceName': '甲',
+          'searchUrl': searchUrl,
+          'exploreUrl': exploreUrl,
+          'enabledExplore': ?enabledExplore,
+        });
+
+    test('脏值形态一律按字面意思认，缺失才默认启用', () {
+      expect(src().enabledExplore, true);
+      expect(src(enabledExplore: false).enabledExplore, false);
+      expect(src(enabledExplore: 0).enabledExplore, false);
+      expect(src(enabledExplore: 'false').enabledExplore, false);
+      expect(src(enabledExplore: '0').enabledExplore, false);
+      expect(src(enabledExplore: 1).enabledExplore, true);
+      expect(src(enabledExplore: const <String, dynamic>{'x': 1}).enabledExplore, true);
+    });
+
+    test('作者关掉发现 → 发现页不认它，规则解析照样在', () {
+      final s = src(exploreUrl: '榜单::/top/{page}.html', enabledExplore: false);
+      expect(s.hasRunnableExplore, true);
+      expect(s.supportsExplore, false);
+    });
+
+    test('@js: 开头等于一条请求都发不出去', () {
+      expect(src(searchUrl: '@js:\nresult = ok();').hasRunnableSearch, false);
+      expect(src(exploreUrl: '@js:\nJSON.stringify(kinds);').supportsExplore, false);
+    });
+
+    test('<js> 整包剥完什么都不剩才算发不出；混在正常地址里剥掉还能发', () {
+      expect(src(searchUrl: '<js>getUrl();</js>').hasRunnableSearch, false);
+      expect(src(searchUrl: 'https://a.com/<js>x()</js>book/{key}').hasRunnableSearch, true);
+      expect(src(searchUrl: 'https://a.com/s?q={key}').hasRunnableSearch, true);
+    });
+
+    test('空串与纯空白都不算规则', () {
+      expect(src(searchUrl: '', exploreUrl: '   ').hasRunnableSearch, false);
+      expect(src(searchUrl: '', exploreUrl: '   ').supportsExplore, false);
+    });
+  });
 }

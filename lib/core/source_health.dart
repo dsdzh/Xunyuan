@@ -55,6 +55,13 @@ class SourceHealthChecker {
   // 整体预算必须显著大于单请求，否则慢站会被误判为不可用
   static const _timeout = Duration(seconds: 40);
 
+  /// 探测走的四级链路全靠引擎的返回值判断，测试要钉住"搜索空→发现兜底"这种
+  /// 分支就只能把引擎换掉，否则非得架一台假站点服务器。
+  SourceHealthChecker({BookSourceEngine Function(BookSource source)? engineFactory})
+      : _engineFor = engineFactory ?? BookSourceEngine.new;
+
+  final BookSourceEngine Function(BookSource source) _engineFor;
+
   Future<SourceHealth> check(BookSource source) async {
     final start = DateTime.now();
     SourceHealth? reached; // 探测过程中已确认到的最高阶段
@@ -84,39 +91,78 @@ class SourceHealthChecker {
 
   Future<SourceHealth> _probe(BookSource source, void Function(SourceHealth) mark) async {
     final start = DateTime.now();
-    if ((source.searchUrl ?? '').trim().isEmpty) {
-      return SourceHealth(HealthLevel.dead, 0, '书源没有搜索规则', start.millisecondsSinceEpoch);
-    }
-    final engine = BookSourceEngine(source);
+    final engine = _engineFor(source);
     List<SearchBook> books = [];
-    for (final kw in keywords) {
-      books = await engine.search(kw);
-      books = books.where((b) => b.bookUrl.isNotEmpty).toList();
-      if (books.isNotEmpty) break;
+    var hitBy = '';
+    String? searchFail;
+    if (source.hasRunnableSearch) {
+      for (final kw in keywords) {
+        try {
+          books = (await engine.search(kw)).where((b) => b.bookUrl.isNotEmpty).toList();
+        } on DioException catch (e) {
+          // 搜索页被反爬/证书拦下不代表整源不能用（403 那种站发现页常常是直连的）。
+          // 也不再换关键词硬试：单个请求的 receiveTimeout 就有 20s，三次都超时
+          // 会把 40s 的整体预算吃光，发现页还没探就到点判死了。
+          searchFail = _describeDio(e);
+          break;
+        } catch (e) {
+          searchFail = e.toString().split('\n').first;
+          break;
+        }
+        if (books.isNotEmpty) {
+          hitBy = '搜索';
+          break;
+        }
+      }
+    }
+    if (books.isEmpty && source.supportsExplore) {
+      // 一批真实书源的搜索页靠 JS 反爬、发现页却是直连的。只探搜索会把这类源判死，
+      // 而判死就等于进了「删除不可用书源」的名单——用户好不容易攒下的源会被误删。
+      for (final cat in BookSourceEngine.exploreCategories(source).take(3)) {
+        try {
+          final found = (await engine.explore(cat.url))
+              .where((b) => b.bookUrl.isNotEmpty)
+              .toList();
+          if (found.isEmpty) continue;
+          books = found;
+          hitBy = '发现';
+          break;
+        } catch (_) {
+          // 换下一个发现分类
+        }
+      }
     }
     if (books.isEmpty) {
-      return SourceHealth(HealthLevel.dead, _ms(start), '搜索无结果（规则失效或反爬拦截）',
+      if (!source.hasRunnableSearch && !source.supportsExplore) {
+        return _noRule(start, source);
+      }
+      return SourceHealth(
+          HealthLevel.dead,
+          _ms(start),
+          searchFail == null
+              ? '搜索与发现页都拿不到结果（规则失效或反爬拦截）'
+              : '搜索失败（$searchFail），发现页也没拿到结果',
           start.millisecondsSinceEpoch);
     }
     final b = books.first;
-    final searchOnly = SourceHealth(HealthLevel.searchOnly, _ms(start), '搜索命中《${b.name}》',
+    final onlyList = SourceHealth(HealthLevel.searchOnly, _ms(start), '$hitBy命中《${b.name}》',
         start.millisecondsSinceEpoch);
-    mark(searchOnly); // 搜索已通，后续详情/目录/正文再慢再挂也不应回落到"不可用"
+    mark(onlyList); // 书单已通，后续详情/目录/正文再慢再挂也不应回落到"不可用"
 
     final BookDetail detail;
     try {
       detail = await engine.bookInfo(b.bookUrl, name: b.name, author: b.author);
     } catch (_) {
-      return searchOnly;
+      return onlyList;
     }
     final tocUrl = detail.tocUrl.isNotEmpty ? detail.tocUrl : b.bookUrl;
     final List<Chapter> chapters;
     try {
       chapters = await engine.toc(tocUrl);
     } catch (_) {
-      return searchOnly;
+      return onlyList;
     }
-    if (chapters.isEmpty) return searchOnly;
+    if (chapters.isEmpty) return onlyList;
     final mid = chapters[chapters.length ~/ 2];
     final probe = chapters.length > 6
         ? [mid, chapters.first, chapters.last]
@@ -135,6 +181,22 @@ class SourceHealthChecker {
     }
     return SourceHealth(HealthLevel.tocNoContent, _ms(start),
         '《${b.name}》${chapters.length}章 正文获取失败', start.millisecondsSinceEpoch);
+  }
+
+  /// 一条请求都发不出去时的实话：区分「压根没写规则」和「规则要执行 JS，而本 App
+  /// 不带 JS 引擎」，也别把后者说成站点失效——用户会白折腾。
+  SourceHealth _noRule(DateTime start, BookSource s) {
+    final why = <String>[];
+    if (!s.hasRunnableSearch) {
+      why.add((s.searchUrl ?? '').trim().isEmpty
+          ? '没有搜索规则'
+          : '搜索规则要先执行 JS，本 App 不执行');
+    }
+    final explore = (s.exploreUrl ?? '').trim();
+    if (!s.supportsExplore && explore.isNotEmpty) {
+      why.add(!s.enabledExplore ? '发现页已被书源作者关闭' : '发现规则要先执行 JS，本 App 不执行');
+    }
+    return _dead(start, '无法探测：${why.join('，')}');
   }
 
   static String _describeDio(DioException e) {

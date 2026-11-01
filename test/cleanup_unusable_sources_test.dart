@@ -103,18 +103,20 @@ void main() {
     expect(StorageService.instance.getSourceHealth('https://off/1'), isNull);
   });
 
-  test('没有可跑规则的算不可用：空规则与只有 JS 规则都算', () async {
+  test('没有可跑规则的算不可用：空规则与 @js: 都算，剥掉 <js> 还剩地址的不算', () async {
     await setUpSources({
       'https://norule/1': src(searchUrl: ''),
       'https://js/2': src(searchUrl: '@js:\nresult = baseUrl + "/s?kw=" + key'),
-      'https://js/3': src(searchUrl: '<js>java.put("x")</js>/modules/article/search'),
+      // `<js>…</js>` 常常只是站点前置的取 cookie/UA 脚本，剥完剩下的还是真地址，
+      // 引擎照样发得出请求。把它算成"没规则"就是把能用的源写进删除名单。
+      'https://strip/3': src(searchUrl: '<js>java.put("x")</js>/modules/article/search'),
       'https://good/4': src(searchUrl: '/modules/article/search?kw={{key}}'),
     });
 
     expect(state.unusableSources.map((s) => s.bookSourceUrl),
-        unorderedEquals(['https://norule/1', 'https://js/2', 'https://js/3']));
-    expect(await state.removeUnusableSources(), 3);
-    expect(state.sources.map((s) => s.bookSourceUrl), ['https://good/4']);
+        unorderedEquals(['https://norule/1', 'https://js/2']));
+    expect(await state.removeUnusableSources(), 2);
+    expect(state.sources.map((s) => s.bookSourceUrl), unorderedEquals(['https://strip/3', 'https://good/4']));
   });
 
   test('只有发现页规则、没有搜索页规则的留着：能发现就能用', () async {

@@ -46,20 +46,15 @@ class SourceState extends ChangeNotifier {
   static String? _unusableReasonOf(BookSource s, Map<String, SourceHealth> health) {
     if (health[s.bookSourceUrl]?.level == HealthLevel.dead) return '检测判定不可用';
     if (!s.enabled) return '处于关闭状态';
-    if (!_hasRunnableRule(s)) return '没有可用的搜索/发现规则';
+    if (!hasRunnableRule(s)) return '没有可用的搜索/发现规则';
     return null;
   }
 
-  /// 规则里只有 `@js:` / `<js>` 时等于发不出请求（本 App 不跑 JS），不算"有规则"
-  static bool _hasRunnableRule(BookSource s) {
-    bool usable(String? url) {
-      final t = (url ?? '').trim();
-      if (t.isEmpty) return false;
-      return !t.contains('@js:') && !t.contains('<js>');
-    }
-
-    return usable(s.searchUrl) || usable(s.exploreUrl);
-  }
+  /// 规则里只有 `@js:` / `<js>` 时等于发不出请求（本 App 不跑 JS），不算"有规则"；
+  /// 作者用 `enabledExplore:false` 关掉的发现页也进不了「发现」，同样不算。
+  /// 口径统一放在这里：健康度探测的兜底路径、删除名单、书源页的头像颜色都得是同一个意思，
+  /// 否则页面标"有规则"、删除名单里却躺着它。
+  static bool hasRunnableRule(BookSource s) => s.hasRunnableSearch || s.supportsExplore;
 
   /// 该删的源：判死 ∪ 关着 ∪ 没有可跑规则的。与 [unusableCounts] 同一口径。
   List<BookSource> get unusableSources =>
@@ -152,13 +147,17 @@ class SourceState extends ChangeNotifier {
   /// 健康度检测：全局共享一个 3 路 worker 池 + 按源去重的待检队列。
   /// 早先是全局互斥（`if (在跑) return;`），批量检测期间点单源「重新检测此书源」
   /// 会被静丢掉——对话框已经关了，什么都没发生。
-  Future<void> checkHealth(List<BookSource> targets) async {
+  /// 返回真正排进队列的条数。去重命中（这个源正在测）就是 0，调用方要能据此说话——
+  /// 书源详情框里那颗「重新检测此书源」点了却毫无反应，用户只会以为没反应是坏了。
+  Future<int> checkHealth(List<BookSource> targets) async {
+    var enqueued = 0;
     for (final s in targets) {
       if (s.bookSourceUrl.isEmpty) continue;
       if (!_healthQueued.add(s.bookSourceUrl)) continue; // 同一源排到了就不重复探
       _healthQueue.add(s);
+      enqueued++;
     }
-    if (_healthQueue.isEmpty) return;
+    if (_healthQueue.isEmpty) return enqueued;
     notifyListeners();
     // spawn 上限取当前队列长度：worker 在首个 await 之前会同步吃掉一个源，
     // 按队列长度封顶才不会在队列已空时反复起落 worker
@@ -167,6 +166,7 @@ class SourceState extends ChangeNotifier {
       _healthWorkers++;
       unawaited(_healthWorker());
     }
+    return enqueued;
   }
 
   Future<void> _healthWorker() async {

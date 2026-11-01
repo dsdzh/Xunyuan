@@ -10,6 +10,9 @@ class BookSource {
   final String? bookUrlPattern;
   final String? searchUrl;
   final bool enabled;
+
+  /// Legado 的「启用发现」：作者判定发现页不可靠时自己关掉它。
+  final bool enabledExplore;
   final int customOrder;
   final String? header;
   final String? bookSourceComment;
@@ -33,6 +36,7 @@ class BookSource {
     this.searchUrl,
     this.exploreUrl,
     this.enabled = true,
+    this.enabledExplore = true,
     this.customOrder = 0,
     this.header,
     this.bookSourceComment,
@@ -60,6 +64,7 @@ class BookSource {
       searchUrl: _plainText(j['searchUrl']),
       exploreUrl: _plainText(j['exploreUrl']),
       enabled: j['enabled'] != false,
+      enabledExplore: _boolOr(j['enabledExplore'], true),
       customOrder: (j['customOrder'] is num) ? (j['customOrder'] as num).toInt() : 0,
       header: _plainText(j['header']),
       bookSourceComment: _plainText(j['bookSourceComment']),
@@ -82,11 +87,44 @@ class BookSource {
     return v.toString();
   }
 
+  /// 布尔开关的脏值容忍：部分转换站写 `0` / `"false"`，一律按字面意思认，
+  /// 认不出（缺字段、对象形态）才用 fallback。
+  static bool _boolOr(dynamic v, bool fallback) {
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    if (v is String) {
+      final s = v.trim().toLowerCase();
+      if (s == 'true' || s == '1') return true;
+      if (s == 'false' || s == '0') return false;
+    }
+    return fallback;
+  }
+
   Map<String, dynamic> toJson() => raw;
 
-  /// 书源类型: 0 小说 1 漫画 2 音频 3 视频
+  /// 书源类型: 0 文本(小说) 1 音频 2 图片 3 文件(只提供下载的网站) 4 视频
+  /// —— 序按 Legado `BookSource.kt` 的 `bookSourceType` 注释，别照第三方转换站的 1=漫画 改回去
   int get sourceType => int.tryParse(bookSourceType ?? '0') ?? 0;
   bool get isNovel => sourceType == 0;
+
+  /// 引擎到底发不发出这一条请求。判定必须与 `BookSourceEngine._buildRequest`
+  /// 的前三行一致：`@js:` 开头、或剥掉 `<js>…</js>` 之后什么都不剩，才算发不出。
+  /// `<js>` 混在正常地址里的那种（`https://a.com/<js>x</js>book/{key}`）剥完仍有地址，
+  /// 别一刀切成"没有可用规则"，否则能用的源会被写进删除名单。
+  static bool plainTemplate(String? tpl) {
+    final t = (tpl ?? '').trim();
+    if (t.isEmpty || t.startsWith('@js:')) return false;
+    return t.replaceAll(_jsBlock, '').trim().isNotEmpty;
+  }
+
+  static final RegExp _jsBlock = RegExp(r'<js>[\s\S]*?</js>');
+
+  bool get hasRunnableSearch => plainTemplate(searchUrl);
+  bool get hasRunnableExplore => plainTemplate(exploreUrl);
+
+  /// 作者自己在书源里关掉发现（Legado `enabledExplore`）的源不进「发现」页，
+  /// 关掉通常意味着那条 exploreUrl 已经烂了，列出来只会让用户白点。
+  bool get supportsExplore => enabledExplore && hasRunnableExplore;
 }
 
 class BookInfoRule {
