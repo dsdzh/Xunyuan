@@ -5,9 +5,14 @@ import 'package:provider/provider.dart';
 import 'package:xunyuan/pages/search_page.dart';
 import 'package:xunyuan/state/app_state.dart';
 
+import 'storage_harness.dart';
+
 /// 搜索页顶栏与空状态的回归：输入框收成带边距的胶囊，空白处下拉/点击都能聚焦。
 void main() {
   late FocusNode node;
+
+  // 空态要读搜索记录，StorageService 没 init 就是未开盒的 late 字段
+  setUp(() => initTempStorage('searchfocus'));
 
   Future<void> pumpSearch(WidgetTester tester) async {
     await tester.pumpWidget(

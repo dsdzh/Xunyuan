@@ -229,6 +229,43 @@ class StorageService {
         await _settings.delete(_historyKey);
       });
 
+  // ---------- 搜索记录 ----------
+  // 只存关键词：搜索页换 tab 会退回空态，靠它把"刚才搜过什么"接着给出来
+  static const _searchHistoryKey = 'searchHistory';
+  static const searchHistoryCap = 50;
+
+  List<String> get searchHistory {
+    final v = _settings.get(_searchHistoryKey);
+    if (v is! String) return [];
+    try {
+      final j = jsonDecode(v);
+      // 坏盒逐帧救回来的记录可能是 [{...}] 这种非字符串元素，whereType 筛掉即可，
+      // 别让一条脏记录把整个搜索页的空态带崩
+      if (j is List) return j.whereType<String>().toList();
+    } catch (_) {}
+    return [];
+  }
+
+  Future<void> addSearchHistory(String keyword) {
+    final kw = keyword.trim();
+    if (kw.isEmpty) return Future.value();
+    return _serialized(() async {
+      final list = searchHistory..removeWhere((e) => e == kw);
+      list.insert(0, kw);
+      if (list.length > searchHistoryCap) list.removeRange(searchHistoryCap, list.length);
+      await _settings.put(_searchHistoryKey, jsonEncode(list));
+    });
+  }
+
+  Future<void> removeSearchHistory(String keyword) => _serialized(() async {
+        final list = searchHistory..removeWhere((e) => e == keyword);
+        await _settings.put(_searchHistoryKey, jsonEncode(list));
+      });
+
+  Future<void> clearSearchHistory() => _serialized(() async {
+        await _settings.delete(_searchHistoryKey);
+      });
+
   // ---------- 章节缓存 ----------
   // 缓存键里拼了整条章节 URL，长度不可控，必须过 boxKeyOf
   String? getCachedChapter(String chapterKey) => _cache.get(boxKeyOf(chapterKey));

@@ -72,11 +72,12 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
-    const pages = [
-      BookshelfPage(),
-      ExplorePage(),
-      SearchPage(),
-      SourcePage(),
+    // IndexedStack 让各页常驻不重建，搜索页要靠 visible 才知道自己被切走了
+    final pages = [
+      const BookshelfPage(),
+      const ExplorePage(),
+      SearchPage(visible: _index == 2),
+      const SourcePage(),
     ];
     return PopScope(
       canPop: false,

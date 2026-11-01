@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../core/book_source_engine.dart';
 import '../models/book_source.dart';
+import '../services/storage_service.dart';
 import '../state/app_state.dart';
 import '../widgets/book_tile.dart';
 import 'detail_page.dart';
@@ -50,7 +51,12 @@ List<SearchHit> mergeSearchResults(List<SourceGroupResult> groups) {
 
 class SearchPage extends StatefulWidget {
   final String initialKeyword;
-  const SearchPage({super.key, this.initialKeyword = ''});
+
+  /// MainPage 用 IndexedStack 常驻各页，切走不会 dispose，所以要靠这个信号
+  /// 在「可见→不可见」那一下把页面收回空态。独立 push 出来的搜索页恒为 true，
+  /// 从详情页返回不该把结果清掉。
+  final bool visible;
+  const SearchPage({super.key, this.initialKeyword = '', this.visible = true});
 
   @override
   State<SearchPage> createState() => _SearchPageState();
@@ -64,16 +70,49 @@ class _SearchPageState extends State<SearchPage> {
   Set<String> _selectedUrls = {};
   final Set<String> _seenUrls = {};
   int _searchGen = 0;
+  List<String> _history = const [];
+
+  /// 空态只摆最近这几条，其余进「全部」面板看
+  static const _inlineHistoryCount = 10;
 
   @override
   void initState() {
     super.initState();
+    _history = StorageService.instance.searchHistory;
     _syncSelected();
     if (widget.initialKeyword.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _doSearch(widget.initialKeyword);
       });
     }
+  }
+
+  @override
+  void didUpdateWidget(SearchPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.visible || !oldWidget.visible) return;
+    _resetToIdle();
+  }
+
+  /// 切走 tab 就当作"没搜过"：结果、输入框、焦点全部收回，回来只剩搜索记录。
+  /// 就地清而不是回来时清，省得一进搜索页先闪一下旧结果。
+  /// didUpdateWidget 之后必然跟着本元素重建，所以这里只改字段不 setState；
+  /// build 期间动 FocusManager 会撞上「setState() called during build」断言，
+  /// 取消焦点得推到本帧渲染完。
+  void _resetToIdle() {
+    if (_results.isEmpty && _controller.text.isEmpty) return;
+    // 在飞的请求靠 gen 作废，不然它们回来后又把空态填回结果
+    _searchGen++;
+    _results.clear();
+    _controller.clear();
+    _history = StorageService.instance.searchHistory;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _searchFocus.unfocus();
+    });
+  }
+
+  void _reloadHistory() {
+    if (mounted) setState(() => _history = StorageService.instance.searchHistory);
   }
 
   void _syncSelected() {
@@ -152,6 +191,125 @@ class _SearchPageState extends State<SearchPage> {
 
   void _focusSearch() => _searchFocus.requestFocus();
 
+  /// 点记录=用这个词再搜一次
+  void _searchFromHistory(String kw) {
+    _controller.text = kw;
+    _doSearch(kw);
+  }
+
+  Future<void> _deleteHistoryEntry(String kw) async {
+    await StorageService.instance.removeSearchHistory(kw);
+    _reloadHistory();
+  }
+
+  Future<void> _clearHistory() async {
+    await StorageService.instance.clearSearchHistory();
+    _reloadHistory();
+  }
+
+  Widget _historyChip(String kw) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _searchFromHistory(kw),
+        child: Padding(
+          padding: const EdgeInsets.only(left: 12, right: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 150),
+                child: Text(kw,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, size: 15),
+                tooltip: '删除这条记录',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 28, height: 28),
+                onPressed: () => _deleteHistoryEntry(kw),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 全部搜索记录：点一条就地收起面板并搜它，右侧单删，右上角清空
+  Future<void> _showAllHistory() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.55,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 4, 0),
+                  child: Row(
+                    children: [
+                      Text('搜索记录（${_history.length}）',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: _history.isEmpty
+                            ? null
+                            : () async {
+                                await _clearHistory();
+                                setSheet(() {});
+                              },
+                        child: const Text('清空'),
+                      ),
+                      IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(ctx)),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: _history.isEmpty
+                      ? Center(
+                          child: Text('没有搜索记录', style: TextStyle(color: Colors.grey.shade600)))
+                      : ListView(
+                          children: [
+                            for (final kw in _history)
+                              ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.history, size: 20),
+                                title: Text(kw, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.close, size: 18),
+                                  tooltip: '删除这条记录',
+                                  onPressed: () async {
+                                    await _deleteHistoryEntry(kw);
+                                    setSheet(() {});
+                                  },
+                                ),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  _searchFromHistory(kw);
+                                },
+                              ),
+                          ],
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _doSearch(String key) async {
     if (key.trim().isEmpty) return;
     _syncSelected();
@@ -166,6 +324,8 @@ class _SearchPageState extends State<SearchPage> {
       }
       return;
     }
+    // 先切到结果态再落盘：搜索记录的写要走真实事件循环，
+    // 排在前面会让点下搜索后空屏一瞬
     setState(() {
       _searchGen++;
       _results
@@ -174,8 +334,13 @@ class _SearchPageState extends State<SearchPage> {
     });
 
     final gen = _searchGen;
+    final pending = Future.wait(
+        _results.map((group) => _searchOne(group, key, gen)));
+    // 发起就记下，不等结果：全部书源都失败也算"搜过这个词"，下次回来该能一键再来一次
+    await StorageService.instance.addSearchHistory(key);
+    if (mounted) _reloadHistory();
     // 等全部书源返回再 resolve，下拉刷新指示器才能反映真实进度
-    await Future.wait(_results.map((group) => _searchOne(group, key, gen)));
+    await pending;
   }
 
   Future<void> _searchOne(SourceGroupResult group, String key, int gen) async {
@@ -273,6 +438,44 @@ class _SearchPageState extends State<SearchPage> {
                     Icon(Icons.keyboard_arrow_down, size: 28, color: Colors.grey.shade500),
                     Text('下拉或点击空白处聚焦搜索框',
                         style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                    if (_history.isNotEmpty) ...[
+                      const SizedBox(height: 32),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text('搜索记录',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: Colors.grey.shade700)),
+                                const Spacer(),
+                                // 空态只摆最近几条，其余进面板看全部
+                                InkWell(
+                                  onTap: _showAllHistory,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                    child: Text('全部 ${_history.length} 条 ›',
+                                        style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final kw in _history.take(_inlineHistoryCount)) _historyChip(kw),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
