@@ -39,6 +39,26 @@ void main() {
       // 文案里先写别的话，后面才是域名
       expect(parsePastedSource('自用书源 pv510kv.cn/x.json 长期更新').url,
           'https://pv510kv.cn/x.json');
+      // 整段就是一个裸域名（没有路径）也算地址，结尾带标点也算
+      expect(parsePastedSource('pv510kv.cn').url, 'https://pv510kv.cn');
+      expect(parsePastedSource('pv510kv.cn。').url, 'https://pv510kv.cn');
+    });
+
+    test('本机/局域网 IP 补 http，公网地址仍补 https', () {
+      expect(parsePastedSource('127.0.0.1:8931/shuyuan.json').url,
+          'http://127.0.0.1:8931/shuyuan.json');
+      expect(parsePastedSource('192.168.1.5:8080/x.json').url, 'http://192.168.1.5:8080/x.json');
+      expect(parsePastedSource('10.0.0.9/x.json').url, 'http://10.0.0.9/x.json');
+      expect(parsePastedSource('8.8.8.8/x.json').url, 'https://8.8.8.8/x.json');
+      // 文案里夹着内网地址也要摘得出来
+      expect(parsePastedSource('宿舍自建源 192.168.0.7:9000/book.json 长期更新').url,
+          'http://192.168.0.7:9000/book.json');
+    });
+
+    test('文案里的英文文件名不当成域名', () {
+      // 被文案围着又没路径 → 只可能是提了一嘴文件名，不是让人去请求它
+      expect(parsePastedSource('见 README.md 里的说明').isEmpty, true);
+      expect(parsePastedSource('note.txt 是备份文件').isEmpty, true);
     });
 
     test('Legado 导入深链取 url= 参数，编码与未编码都要还原', () {

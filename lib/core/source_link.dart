@@ -29,12 +29,14 @@ const String _trailingJunk = '.,;:!?、。，；：！？)）]】》>"\'';
 /// 深链里可能藏链接的参数名
 final RegExp _linkParamKeyRe = RegExp(r'^(url|src|bookSourceUrl|importUrl)$', caseSensitive: false);
 
-/// 形如 `pv510kv.cn/book.json` / `example.com:8080/a?x=1` 的缺 scheme 域名。
+/// 形如 `pv510kv.cn/book.json` / `example.com:8080/a?x=1` / `127.0.0.1:8931/x.json` 的缺 scheme 地址。
 /// 前缀写成 `(?:^|[^A-Za-z0-9._%-])` 是为了既能整段就是域名，也能从
-/// `书源：pv510kv.cn/x.json` 这种被中文标签粘住的文案里摘出域名——
-/// 而 `v1.25beta` 这类片段因为前一个字符是字母/数字/点而不会被当域名。
+/// `书源：pv510kv.cn/x.json` 这种被中文标签粘住的文案里摘出地址——
+/// 而 `v1.25beta` 这类片段因为前一个字符是字母/数字/点而不会被当地址。
+/// IPv4 单独一条分支：域名分支要求最后一个标签是字母，`127.0.0.1` 走不通。
 final RegExp _bareHostRe = RegExp('(?:^|[^A-Za-z0-9._%-])'
-    '([A-Za-z0-9][-A-Za-z0-9.]*\\.[A-Za-z]{2,12}(?::\\d{1,5})?(?:/[^$_urlStops]*)?)');
+    '(([A-Za-z0-9][-A-Za-z0-9.]*\\.[A-Za-z]{2,12}|\\d{1,3}(?:\\.\\d{1,3}){3})'
+    '(?::\\d{1,5})?(?:/[^$_urlStops]*)?)');
 
 PastedSource parsePastedSource(String text) {
   final t = text.trim();
@@ -55,9 +57,31 @@ PastedSource parsePastedSource(String text) {
   final embedded = _urlRe.firstMatch(t)?.group(0);
   if (embedded != null) return PastedSource(url: _trimTail(embedded));
 
-  final host = _bareHostRe.firstMatch(t)?.group(1);
-  if (host != null) return PastedSource(url: _trimTail('https://$host'));
+  final hostMatch = _bareHostRe.firstMatch(t);
+  final host = hostMatch?.group(1);
+  if (host != null && (_isStandaloneAddress(t, hostMatch!) || host.contains('/'))) {
+    return PastedSource(url: _trimTail('${_schemeFor(host)}://$host'));
+  }
   return const PastedSource();
+}
+
+/// 缺 scheme 时补哪个：本机/局域网的 IPv4 几乎只有 http（自建 Mock、内网书源服务器），
+/// 给 https 会直接握手失败；公网地址和域名仍按现在的惯例补 https。
+String _schemeFor(String host) {
+  final ip = RegExp(r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})').firstMatch(host);
+  if (ip == null) return 'https';
+  final a = int.parse(ip.group(1)!), b = int.parse(ip.group(2)!);
+  if (a == 127 || a == 10 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31)) {
+    return 'http';
+  }
+  return 'https';
+}
+
+/// 这段文字除了地址就只剩标点：`pv510kv.cn。` 这种，补 scheme 时不必要求带路径。
+bool _isStandaloneAddress(String text, RegExpMatch match) {
+  final around = (text.substring(0, match.start) + text.substring(match.end)).trim();
+  if (around.isEmpty) return true;
+  return around.split('').every((c) => _trailingJunk.contains(c));
 }
 
 /// 第一个空白之前的片段。粘贴框里也可能塞了几 MB 文本，
