@@ -21,7 +21,18 @@ class SourceState extends ChangeNotifier {
   final List<BookSource> _healthQueue = [];
   final Set<String> _healthQueued = {};
   int _healthWorkers = 0;
+  int _healthProbed = 0; // 本轮实际记下几条结果，跑完才有依据提示"检测到 N 个"
+  int _deadNotice = -1; // 一次性提示位，-1 = 没有待提示
   bool get healthChecking => _healthWorkers > 0;
+
+  /// 取走「本轮检测跑完，当前有 N 个不可用书源」的提示，取过即清。
+  /// 必须一次性：页面是监听 notifyListeners 的，常驻值会让之后每次刷新都弹一遍。
+  /// N 用的是 [deadSources] 同一口径，所以提示里的数字就是点删除真会删掉的条数。
+  int takeDeadNotice() {
+    final n = _deadNotice;
+    _deadNotice = -1;
+    return n;
+  }
 
   List<BookSource> get enabledNovelSources =>
       sources.where((s) => s.enabled && s.isNovel).toList();
@@ -124,6 +135,7 @@ class SourceState extends ChangeNotifier {
           if (!StorageService.instance.sourceExists(s.bookSourceUrl)) continue;
           health[s.bookSourceUrl] = h;
           await StorageService.instance.putSourceHealth(s.bookSourceUrl, h.toJson());
+          _healthProbed++;
           notifyListeners();
         } catch (_) {
           // 单源写盘失败不拖垮整个队列
@@ -133,6 +145,15 @@ class SourceState extends ChangeNotifier {
       }
     } finally {
       _healthWorkers--;
+      // 整池排空才算"这一轮检测结束"，单源重测跑完同样提示——用户刚看完它的结果，
+      // 这时候问删不删最不突兀
+      if (_healthWorkers == 0) {
+        if (_healthProbed > 0) {
+          final dead = deadSources.length;
+          if (dead > 0) _deadNotice = dead; // 没有死源就留 -1，取用侧不必再判 0
+        }
+        _healthProbed = 0;
+      }
       notifyListeners();
     }
   }

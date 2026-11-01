@@ -13,15 +13,17 @@ import 'package:xunyuan/state/app_state.dart';
 /// 假探测器：started 记录每个源被探测的次数，release 门住完成时机，
 /// 这样测试能稳稳站住「批量检测正在跑」的那个窗口。
 class _FakeChecker extends SourceHealthChecker {
-  _FakeChecker(this.started, this.release);
+  _FakeChecker(this.started, this.release, {this.levels = const {}});
   final List<String> started;
   final Completer<void> release;
+  final Map<String, int> levels; // 按源指定判定结果，缺省「可用」
 
   @override
   Future<SourceHealth> check(BookSource s) async {
     started.add(s.bookSourceUrl);
     await release.future;
-    return SourceHealth(HealthLevel.ok, 10, '假检测', DateTime.now().millisecondsSinceEpoch);
+    return SourceHealth(levels[s.bookSourceUrl] ?? HealthLevel.ok, 10, '假检测',
+        DateTime.now().millisecondsSinceEpoch);
   }
 }
 
@@ -32,7 +34,7 @@ void main() {
   late Completer<void> release;
   late SourceState state;
 
-  Future<void> setUpState() async {
+  Future<void> setUpState({Map<String, int> levels = const {}}) async {
     final dir = await Directory.systemTemp.createTemp('healthq');
     addTearDown(() async {
       await Hive.close();
@@ -53,7 +55,9 @@ void main() {
     started = [];
     release = Completer<void>();
     state = SourceState(
-        checkerFactory: () => _FakeChecker(started, release));
+        checkerFactory: () => _FakeChecker(started, release, levels: levels));
+    // deadSources 是从 state.sources 里筛的，不 load 进来就是空列表
+    await state.load();
   }
 
   Future<void> waitIdle() async {
@@ -111,5 +115,48 @@ void main() {
     await state.checkHealth([src('')]);
     expect(started, isEmpty);
     expect(state.healthChecking, false);
+  });
+
+  test('一轮检测跑完留下「有 N 个不可用」的一次性提示', () async {
+    await setUpState(levels: {
+      'https://a/1': HealthLevel.dead,
+      'https://b/2': HealthLevel.dead,
+      'https://c/3': HealthLevel.searchOnly,
+    });
+    await state.checkHealth([src('https://a/1'), src('https://b/2'), src('https://c/3')]);
+    expect(state.takeDeadNotice(), -1); // 还在跑，不能提前提示
+
+    release.complete();
+    await waitIdle();
+    expect(state.deadSources.length, 2); // 「仅搜索」不算不可用
+    expect(state.takeDeadNotice(), 2); // 数字与 deadSources 同口径
+    expect(state.takeDeadNotice(), -1); // 取过即清，不会每次刷新都弹
+  });
+
+  test('整轮没有死源就不提示', () async {
+    await setUpState(levels: {'https://a/1': HealthLevel.ok, 'https://b/2': HealthLevel.tocNoContent});
+    await state.checkHealth([src('https://a/1'), src('https://b/2')]);
+    release.complete();
+    await waitIdle();
+    expect(state.takeDeadNotice(), -1);
+  });
+
+  test('什么都没探测成就不提示：一条结果都没记下，谈不上「测到不可用」', () async {
+    await setUpState(levels: {'https://a/1': HealthLevel.dead});
+    await state.checkHealth([]); // 空目标直接返回
+    expect(state.takeDeadNotice(), -1);
+  });
+
+  test('单源重测跑完也提示，数字含上一轮遗留的死源', () async {
+    await setUpState(levels: {'https://a/1': HealthLevel.dead, 'https://b/2': HealthLevel.dead});
+    await state.checkHealth([src('https://a/1'), src('https://b/2')]);
+    release.complete();
+    await waitIdle();
+    expect(state.takeDeadNotice(), 2);
+
+    started.clear();
+    await state.checkHealth([src('https://a/1')]); // 探测门已开，这一轮立刻跑完
+    await waitIdle();
+    expect(state.takeDeadNotice(), 2); // a 重测仍死，b 的死记录还在 → 该删的还是 2 个
   });
 }

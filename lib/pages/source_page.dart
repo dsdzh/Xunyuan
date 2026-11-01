@@ -12,8 +12,51 @@ import '../models/book_source.dart';
 import '../state/app_state.dart';
 import 'search_page.dart';
 
-class SourcePage extends StatelessWidget {
+class SourcePage extends StatefulWidget {
   const SourcePage({super.key});
+
+  @override
+  State<SourcePage> createState() => _SourcePageState();
+}
+
+class _SourcePageState extends State<SourcePage> {
+  SourceState? _watched;
+  bool _deadPromptOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = context.read<SourceState>();
+    _watched = state;
+    state.addListener(_onHealthChanged);
+  }
+
+  @override
+  void dispose() {
+    _watched?.removeListener(_onHealthChanged);
+    super.dispose();
+  }
+
+  /// 一轮健康度检测跑完，若还有不可用的源就当场问一次要不要删。
+  /// 提示位是一次性的（take 过即清），不取就作废——菜单里那条「删除不可用书源（N）」
+  /// 一直看得到条数，没必要攒着等下次进页面再补弹。
+  void _onHealthChanged() {
+    final state = _watched;
+    if (state == null || _deadPromptOpen) return;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return; // 阅读页/详情页压在上面时别抢弹窗
+    final n = state.takeDeadNotice();
+    if (n <= 0) return;
+    _deadPromptOpen = true;
+    // notifyListeners 可能正处在遍历监听者的中途，插路由要等本帧画完
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        if (mounted) await _deleteDeadSources(context, state);
+      } finally {
+        _deadPromptOpen = false;
+      }
+    });
+  }
 
   Future<void> _importFromText(BuildContext context, String text) async {
     final state = context.read<SourceState>();
