@@ -23,6 +23,10 @@ class _SourcePageState extends State<SourcePage> {
   SourceState? _watched;
   bool _deadPromptOpen = false;
 
+  /// 只在 build 里查 ModalRoute（InheritedWidget 依赖只能在构建期登记），
+  /// 监听回调读这份缓存值：阅读页/详情页压在上面时不抢弹窗
+  bool _routeIsCurrent = true;
+
   @override
   void initState() {
     super.initState();
@@ -42,9 +46,7 @@ class _SourcePageState extends State<SourcePage> {
   /// 一直看得到条数，没必要攒着等下次进页面再补弹。
   void _onHealthChanged() {
     final state = _watched;
-    if (state == null || _deadPromptOpen) return;
-    final route = ModalRoute.of(context);
-    if (route != null && !route.isCurrent) return; // 阅读页/详情页压在上面时别抢弹窗
+    if (state == null || _deadPromptOpen || !_routeIsCurrent) return;
     final n = state.takeDeadNotice();
     if (n <= 0) return;
     _deadPromptOpen = true;
@@ -276,6 +278,7 @@ class _SourcePageState extends State<SourcePage> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<SourceState>();
+    _routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
     return Scaffold(
       appBar: AppBar(
         title: const Text('书源管理'),
