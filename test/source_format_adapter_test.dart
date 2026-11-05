@@ -58,6 +58,16 @@ void main() {
       expect(parseBookSources(text).length, 1);
     });
 
+    /// 几个 KB 的 gzip 就能解出上百 MB，`gzip.decode` 会一口气解到内存耗尽
+    /// （dart:io 只在流结束时校验 trailer 的 ISIZE，事先读它拦不住）。
+    test('gzip 炸弹：解压超上限就整段拒掉，不解到内存耗尽', () {
+      final bomb = base64Encode(gzip.encode(List.filled(200 * 1024 * 1024, 0x41)));
+      expect(bomb.length, lessThan(1024 * 1024)); // 压缩后确实很小，正是要防的形态
+      expect(parseBookSources(bomb), isEmpty);
+      // 同一批夹具里正常体积的仍要解得开
+      expect(parseBookSources(base64Encode(gzip.encode(utf8.encode(src(''))))).length, 1);
+    });
+
     test('URL 编码包装', () {
       final text = Uri.encodeFull(src(''));
       expect(parseBookSources(text).single.bookSourceName, 'A');

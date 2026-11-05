@@ -109,6 +109,19 @@ void main() {
       expect(get('@xpath://li[@class="item"]/a/@data-nothing'), isEmpty);
     });
 
+    /// 谓词里的天文数字以前走 `int.parse`：溢出抛的是 FormatException，
+    /// 不属于 `UnsupportedXPath`，上层 catch 不住 → 整条规则中断而不是匹配为空
+    test('天文数字的位置谓词：按"比它大/等于它都不成立"处理，不抛', () {
+      final huge = '9' * 30;
+      expect(get("@xpath://li[$huge]"), isEmpty);
+      expect(get("@xpath://li[position()>$huge]"), isEmpty);
+      expect(get("@xpath://li[position()>=$huge]"), isEmpty);
+      expect(get("@xpath://li[position()=$huge]/a/text()"), isEmpty);
+      expect(get("@xpath://li[position()<$huge]/a/text()"), ['星渊纪元', '归途', '断章']);
+      expect(get("@xpath://li[position()!=$huge]/a/text()"), hasLength(3));
+      expect(RuleEngine.warnings, isEmpty);
+    });
+
     test('超出子集：记警告并返回空', () {
       for (final bad in [
         '@xpath://p/following-sibling::div', // 轴

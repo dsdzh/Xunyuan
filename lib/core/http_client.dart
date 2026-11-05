@@ -15,6 +15,18 @@ class PageResponse {
   PageResponse(this.body, this.statusCode, this.url);
 }
 
+/// 非 http/https 的出站地址（书源规则或页面里的链接可能被写成 `file://`、`data:`）
+class UnsupportedUrlException implements Exception {
+  final String url;
+  UnsupportedUrlException(this.url);
+
+  @override
+  String toString() {
+    final scheme = Uri.tryParse(url.trim())?.scheme;
+    return '只支持 http/https 协议，已拒绝：${(scheme == null || scheme.isEmpty) ? url : '$scheme://…'}';
+  }
+}
+
 /// 极简 Cookie 管理（按域名）
 class CookieJar {
   final Map<String, Map<String, String>> _cookies = {};
@@ -91,6 +103,30 @@ class HttpClient {
   /// 正常页面/书源文件都在百 KB 级，超限只可能是恶意或异常大响应（内存 DoS）
   static const maxResponseBytes = 20 * 1024 * 1024;
 
+  /// 只放行 http/https。书源规则与页面里的链接都是不可信输入，
+  /// `file://` / `data:` 交给 dio 会抛 UnsupportedError（不属于 DioException，
+  /// 绕过了所有 `on DioException` 分支），协议白名单必须在出口处挡死。
+  static final RegExp _httpSchemeRe = RegExp(r'^https?://', caseSensitive: false);
+
+  static void _requireHttpUrl(String url) {
+    if (!_httpSchemeRe.hasMatch(url.trim())) {
+      throw UnsupportedUrlException(url);
+    }
+  }
+
+  /// header 名按 RFC 7230 的 token 字符集校验，值不许带 CR/LF。
+  /// 这是所有出站请求的最后一道闸：名字不合法 dio 会抛（整个源被打死），
+  /// 值里塞换行则是请求头注入（能伪造 Host/Connection 之外的任意头）。
+  static final RegExp headerNameRe = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
+
+  static Map<String, String> sanitizeHeaders(Map<String, String>? src) {
+    if (src == null || src.isEmpty) return <String, String>{};
+    final out = Map<String, String>.from(src);
+    out.removeWhere((k, v) =>
+        k.isEmpty || !headerNameRe.hasMatch(k) || v.contains('\n') || v.contains('\r'));
+    return out;
+  }
+
   /// host -> 该主机严格校验失败时见过的证书指纹。
   /// 首次失败无法区分"缺中间证书的破链"与"中间人"，信任并钉住；
   /// 之后同主机只接受已钉证书——攻击者没有服务器私钥，伪造不了同指纹证书。
@@ -147,13 +183,14 @@ class HttpClient {
   }
 
   Future<PageResponse> get(String url, {Map<String, String>? headers, String? charsetHint}) async {
-    final options = Options(headers: {
+    _requireHttpUrl(url);
+    final options = Options(headers: sanitizeHeaders({
       'User-Agent': defaultUA,
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9',
       'Cookie': cookies.headerFor(url),
       ...?headers,
-    }..removeWhere((k, v) => v.isEmpty));
+    })..removeWhere((k, v) => v.isEmpty));
     try {
       final resp = await _execute(url, (d) => d.get(url, options: options));
       cookies.storeFrom(resp.realUri.toString(), resp.headers['set-cookie']);
@@ -175,12 +212,13 @@ class HttpClient {
 
   Future<PageResponse> post(String url,
       {Object? body, Map<String, String>? headers, String? contentType, String? charsetHint}) async {
-    final options = Options(headers: {
+    _requireHttpUrl(url);
+    final options = Options(headers: sanitizeHeaders({
       'User-Agent': defaultUA,
       'Cookie': cookies.headerFor(url),
-      'Content-Type': contentType,
+      'Content-Type': contentType ?? '',
       ...?headers,
-    }..removeWhere((k, v) => v.isEmpty));
+    })..removeWhere((k, v) => v.isEmpty));
     final resp = await _execute(url, (d) => d.post(url, data: body, options: options));
     cookies.storeFrom(resp.realUri.toString(), resp.headers['set-cookie']);
     final data = resp.data;

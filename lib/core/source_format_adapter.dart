@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show gzip;
+import 'dart:typed_data';
 
 /// 书源导入的格式适配层：把"不是标准 Legado 3.0 JSON"的内容尽力还原成
 /// `BookSource.fromJson` 直接可用的 map。
@@ -453,11 +454,9 @@ String? _unwrapOnce(String s) {
       return null;
     }
     if (bytes.length >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b) {
-      try {
-        bytes = gzip.decode(bytes);
-      } catch (_) {
-        return null;
-      }
+      final inflated = _gunzipCapped(bytes);
+      if (inflated == null) return null;
+      bytes = inflated;
     }
     try {
       final t = utf8.decode(bytes);
@@ -465,6 +464,37 @@ String? _unwrapOnce(String s) {
     } catch (_) {}
   }
   return null;
+}
+
+/// 有上限的 gunzip。`gzip.decode` 会一口气解到底——dart:io 只在流结束时才校验 trailer
+/// 里的 ISIZE，事先读它拦不住谎报的炸弹（base64 撑到 8 MB 上限就能解出数 GB）。
+/// 这里走分块转换，解出一块查一次累计长度，超限就抛。
+/// 上限取 `_maxTextLength`：解出来的文本反正要过那道闸，多解无益。
+List<int>? _gunzipCapped(List<int> bytes) {
+  final out = BytesBuilder(copy: false);
+  try {
+    final src = gzip.decoder.startChunkedConversion(_CappedSink(out, _maxTextLength));
+    src.add(bytes);
+    src.close();
+  } catch (_) {
+    return null;
+  }
+  return out.takeBytes();
+}
+
+class _CappedSink implements Sink<Uint8List> {
+  _CappedSink(this._out, this._limit);
+  final BytesBuilder _out;
+  final int _limit;
+
+  @override
+  void add(Uint8List data) {
+    if (_out.length + data.length > _limit) throw const FormatException('解压后超出上限');
+    _out.add(data);
+  }
+
+  @override
+  void close() {}
 }
 
 /// 整段看着像 URL 编码（不是 JSON 起手）才解，`{"u":"a%20b"}` 这种不能被误伤

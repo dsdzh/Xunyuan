@@ -257,12 +257,29 @@ bool _evalPredicate(String predicate, dynamic node, int pos, int size) {
   if (p.startsWith('not(') && _closesAtEnd(p)) {
     return !_evalPredicate(p.substring(4, p.length - 1), node, pos, size);
   }
-  if (_numberRe.hasMatch(p)) return pos == int.parse(p);
+  if (_numberRe.hasMatch(p)) {
+    final n = int.tryParse(p);
+    // 超出 int 的位置谓词不可能命中任何节点；int.parse 会抛，异常不属于 UnsupportedXPath，
+    // 会让整条规则从"匹配为空"升级成"解析中断"
+    if (n == null) return false;
+    return pos == n;
+  }
   if (p == 'last()') return pos == size;
 
   final rel = RegExp(r'^position\(\)\s*(<=|>=|<|>|=|!=)\s*(\d+)$').firstMatch(p);
   if (rel != null) {
-    final n = int.parse(rel.group(2)!);
+    // 同样的天文数字：小于它/不等于它成立，大于它/等于它不成立
+    final n = int.tryParse(rel.group(2)!);
+    if (n == null) {
+      switch (rel.group(1)!) {
+        case '<':
+        case '<=':
+        case '!=':
+          return true;
+        default:
+          return false;
+      }
+    }
     switch (rel.group(1)!) {
       case '<':
         return pos < n;

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:xunyuan/core/http_client.dart';
@@ -33,5 +34,45 @@ void main() {
     jar.storeFrom('https://a.example.com/',
         ['tok=v2; Expires=Thu, 01 Jan 1970 00:00:00 GMT']);
     expect(jar.headerFor('https://a.example.com/'), isEmpty);
+  });
+
+  group('出站请求的出口闸门', () {
+    test('sanitizeHeaders：非法名与带 CR/LF 的值一律丢，合法项原样保留', () {
+      expect(
+        HttpClient.sanitizeHeaders({
+          'User-Agent': 'UA',
+          'a b': 'x',
+          '': 'y',
+          'X-Bad': 'v\r\nX-Injected: 1',
+          'X-Multi': 'a\nb',
+          'X-Good': '1',
+        }),
+        {'User-Agent': 'UA', 'X-Good': '1'},
+      );
+    });
+
+    test('非 http/https 直接拒：file:// 与 data: 都轮不到 dio', () async {
+      await expectLater(
+        HttpClient.instance.get('file:///data/data/ds.xunyuan.com/files/x.json'),
+        throwsA(isA<UnsupportedUrlException>()),
+      );
+      await expectLater(
+        HttpClient.instance.post('data:text/plain,hello'),
+        throwsA(isA<UnsupportedUrlException>()),
+      );
+    });
+
+    test('协议白名单不影响 http（错误来自连接层，不是闸门）', () async {
+      // 端口 1 上必然连不上：拿到 DioException 就说明放行到了发送层
+      await expectLater(
+        HttpClient.instance.get('http://127.0.0.1:1/'),
+        throwsA(isA<DioException>()),
+      );
+    });
+
+    test('异常信息只报协议名，不整段回显地址', () {
+      expect(UnsupportedUrlException('file:///secret/dir/private.json').toString(),
+          contains('file://'));
+    });
   });
 }

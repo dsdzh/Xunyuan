@@ -104,4 +104,59 @@ void main() {
       expect(BookSourceEngine.exploreCategories(src(exploreUrl: '::/a.html')).toList(), isEmpty);
     });
   });
+
+  group('书源凭证只发同站', () {
+    const cred = '{"cookie":"sid=SECRET","Authorization":"Bearer t",'
+        '"User-Agent":"UA","Referer":"https://www.qidian.com"}';
+    BookSourceEngine qidian() => BookSourceEngine(src(header: cred, url: 'https://www.qidian.com/'));
+
+    test('同主机与自己的子域：一个 header 都不脱', () {
+      for (final u in ['https://www.qidian.com/book/1', 'https://m.qidian.com/query']) {
+        expect(qidian().headersFor(u).keys.toList(),
+            ['cookie', 'Authorization', 'User-Agent', 'Referer'],
+            reason: u);
+      }
+    });
+
+    test('页面里塞别人域名：cookie/Authorization 脱掉，UA/Referer 留着', () {
+      expect(qidian().headersFor('https://attacker.example/x').keys.toList(),
+          ['User-Agent', 'Referer']);
+    });
+
+    test('二级公有后缀多取一段：a.co.uk 的 cookie 不给 b.co.uk', () {
+      final e = BookSourceEngine(
+          src(header: '{"cookie":"x=1","User-Agent":"UA"}', url: 'https://www.a.co.uk'));
+      expect(e.headersFor('https://www.b.co.uk/x').keys.toList(), ['User-Agent']);
+      expect(e.headersFor('https://m.a.co.uk/x').keys.toList(), ['cookie', 'User-Agent']);
+    });
+
+    test('com.cn 同理', () {
+      final e = BookSourceEngine(
+          src(header: '{"cookie":"x=1","User-Agent":"UA"}', url: 'https://a.com.cn'));
+      expect(e.headersFor('https://b.com.cn/x').keys.toList(), ['User-Agent']);
+      expect(e.headersFor('https://m.a.com.cn/x').keys.toList(), ['cookie', 'User-Agent']);
+    });
+
+    test('IP 书源按整串比：本机端口的凭证不给局域网另一台', () {
+      final e = BookSourceEngine(
+          src(header: '{"cookie":"x=1","User-Agent":"UA"}', url: 'http://127.0.0.1:8931'));
+      expect(e.headersFor('http://127.0.0.1:8931/book/1').length, 2);
+      expect(e.headersFor('http://192.168.0.9:8931/book/1').keys.toList(), ['User-Agent']);
+    });
+
+    test('书源主页解析不出主机时不设限（老源别被误伤）', () {
+      final e = BookSourceEngine(src(header: '{"cookie":"x=1"}', url: '未命名'));
+      expect(e.headersFor('https://anything.example/'), {'cookie': 'x=1'});
+    });
+
+    test('规则 options 里的 header 走同一道闸：值带 CR/LF 的直接丢', () {
+      final e = BookSourceEngine(src(header: '{"User-Agent":"UA"}'));
+      expect(
+          e.headersFor('https://site.com/s',
+                  extra: {'X-A': 'v\r\nX-Injected: 1', 'ok': '1'})
+              .keys
+              .toList(),
+          ['User-Agent', 'ok']);
+    });
+  });
 }
