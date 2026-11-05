@@ -124,7 +124,8 @@ void main() {
 
     test('超出子集：记警告并返回空', () {
       for (final bad in [
-        '@xpath://p/following-sibling::div', // 轴
+        '@xpath://div/preceding-sibling::p', // 轴：只实现 following-sibling
+        '@xpath://p/parent::div', // 轴：只实现 following-sibling
         '@xpath://*[normalize-space()="星渊纪元"]', // 不认识的函数
         '@xpath://ns:title', // 命名空间前缀
         '@xpath://div[@href="x', // 括号不配对
@@ -132,7 +133,40 @@ void main() {
       ]) {
         expect(get(bad), isEmpty, reason: bad);
       }
-      expect(RuleEngine.warnings.where((w) => w.startsWith('暂不支持 XPath')).length, 5);
+      expect(RuleEngine.warnings.where((w) => w.startsWith('暂不支持 XPath')).length, 6);
+    });
+
+    /// 真实源目录写法：`//div[@id="lbks"]/dl/dt[last()]/following-sibling::dd/a`
+    test('following-sibling:: 轴', () {
+      expect(get('@xpath://div[@class="box"]/ul/li[1]/following-sibling::li/a/text()'),
+          ['归途', '断章']);
+      expect(get('@xpath://div[@class="box"]/p[@class="ad"]/following-sibling::*'), isEmpty);
+      // 节点测试照常过滤
+      expect(get('@xpath://div[@class="box"]/p[@class="ad"]/following-sibling::div'), isEmpty);
+    });
+
+    test('[-1] 倒数位置谓词，越界出空不钳边', () {
+      expect(get('@xpath://ul/li[-1]/a/text()'), ['断章']);
+      expect(get('@xpath://ul/li[-2]/a/text()'), ['归途']);
+      expect(get('@xpath://ul/li[-9]/a/text()'), isEmpty);
+      expect(get('@xpath://ul/li[9]'), isEmpty);
+    });
+
+    /// 真实源 wordCount：`//p[text()='总字数']/span/text()`——`[text()]` 比较的是
+    /// 直接文本子节点，整段 text() 在混合内容下永远比不中
+    test('[text()=v] 命中混合内容的直接文本子节点', () {
+      const mixed = '<html><body><p>总字数<span>123万</span></p><p>更新时间<span>昨天</span></p></body></html>';
+      expect(RuleEngine.getStringList(mixed, '//p[text()="总字数"]/span/text()'), ['123万']);
+      expect(RuleEngine.getStringList(mixed, '//p[text()="更新时间"]/span/text()'), ['昨天']);
+      expect(RuleEngine.getStringList(mixed, '//p[text()="不存在"]/span/text()'), isEmpty);
+      expect(RuleEngine.getStringList(mixed, '//p[not(text()="总字数")]/span/text()'), ['昨天']);
+    });
+
+    /// 15 个真实源的 ruleBookInfo 全用裸 `//meta[...]`，Legado 视同 @xpath: 前缀
+    test('裸 // 前缀等同 @xpath:', () {
+      expect(get('//meta[@property="og:novel:category"]/@content'), ['玄幻奇幻']);
+      expect(get('//li[@class="item"]/a/text()'), ['星渊纪元', '归途', '断章']);
+      expect(get('//li[@class="nope"]/a/text()'), isEmpty);
     });
 
     test('脏数据里 xpath 不会把整页当结果', () {

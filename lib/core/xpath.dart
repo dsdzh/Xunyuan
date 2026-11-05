@@ -15,9 +15,10 @@ class UnsupportedXPath implements Exception {
 /// 支持：
 /// - 路径步：`/`（子代）、`//`（后代），绝对路径 `/html/body/…`
 /// - 节点测试：`*`、标签名、`text()`、`node()`
+/// - 轴：`following-sibling::dd`（真实源 `//dl/dt[last()]/following-sibling::dd/a`）
 /// - 属性步：`/@href`、`//a/@id`（末段）
-/// - 谓词：`[3]`、`[last()]`、`[position()<5]`、`[@attr]`、`[@attr='v']`、
-///   `[@attr!='v']`、`[text()='v']`、`[.='v']`、`[contains(@attr,'v')]`、
+/// - 谓词：`[3]`、`[-1]`（倒数）、`[last()]`、`[position()<5]`、`[@attr]`、`[@attr='v']`、
+///   `[@attr!='v']`、`[text()='v']`（任一直接文本子节点）、`[.='v']`、`[contains(@attr,'v')]`、
 ///   `[contains(.,'v')]`、`[starts-with(@attr,'v')]`、`not(...)`、`and`/`or`，可串联
 /// - 顶层并集：`//h1 | //h2`
 ///
@@ -64,7 +65,8 @@ class _Step {
   final String test;
   final List<String> predicates;
   final String? attr;
-  _Step({required this.descendant, required this.test, required this.predicates, this.attr});
+  final String? axis;
+  _Step({required this.descendant, required this.test, required this.predicates, this.attr, this.axis});
 }
 
 List<_Step> _parseSteps(String path) {
@@ -161,11 +163,23 @@ _Step _parseStep(bool descendant, String text, String path) {
     if (!_nameRe.hasMatch(name)) throw UnsupportedXPath(path);
     return _Step(descendant: descendant, test: '', predicates: preds, attr: name);
   }
-  if (test != '*' && test != 'text()' && test != 'node()' && !_nameRe.hasMatch(test)) {
-    // 命名空间前缀（`ns:tag`）、轴（`parent::`）、函数节点都在这里被挡掉
+  var nodeTest = test;
+  String? axis;
+  final axisAt = nodeTest.indexOf('::');
+  if (axisAt > 0) {
+    axis = nodeTest.substring(0, axisAt);
+    // 真实书源只用得到 following-sibling（`dt[last()]/following-sibling::dd/a` 取最后一卷的章节）
+    if (axis != 'following-sibling') throw UnsupportedXPath(path);
+    nodeTest = nodeTest.substring(axisAt + 2).trim();
+  }
+  if (nodeTest != '*' &&
+      nodeTest != 'text()' &&
+      nodeTest != 'node()' &&
+      !_nameRe.hasMatch(nodeTest)) {
+    // 命名空间前缀（`ns:tag`）、其余轴（`parent::`）、函数节点都在这里被挡掉
     throw UnsupportedXPath(path);
   }
-  return _Step(descendant: descendant, test: test, predicates: preds);
+  return _Step(descendant: descendant, test: nodeTest, predicates: preds, axis: axis);
 }
 
 final RegExp _nameRe = RegExp(r'^[A-Za-z][-\w.]*$');
@@ -173,8 +187,13 @@ final RegExp _nameRe = RegExp(r'^[A-Za-z][-\w.]*$');
 List<dynamic> _applyStep(List<dynamic> ctx, _Step st) {
   final out = <dynamic>[];
   for (final node in ctx) {
-    var set = st.descendant ? _descendantsOf(node, st.test) : _childrenOf(node, st.test);
-    set = set.where((n) => _testMatches(n, st.test)).toList();
+    final List<dynamic> base;
+    if (st.axis != null) {
+      base = _followingSiblingsOf(node);
+    } else {
+      base = st.descendant ? _descendantsOf(node, st.test) : _childrenOf(node, st.test);
+    }
+    var set = base.where((n) => _testMatches(n, st.test)).toList();
     for (final pred in st.predicates) {
       final next = <dynamic>[];
       for (var i = 0; i < set.length; i++) {
@@ -190,6 +209,23 @@ List<dynamic> _applyStep(List<dynamic> ctx, _Step st) {
 }
 
 bool _want(String test) => test == 'text()' || test == 'node()';
+
+/// `following-sibling::` 轴：当前节点之后的所有兄弟节点（不含自身），节点测试留给调用方过滤。
+List<dynamic> _followingSiblingsOf(dynamic node) {
+  if (node is! h.Element) return const [];
+  final parent = node.parent;
+  if (parent == null) return const [];
+  final out = <dynamic>[];
+  var seen = false;
+  for (final sib in parent.nodes) {
+    if (!seen) {
+      seen = identical(sib, node);
+      continue;
+    }
+    if (sib is h.Element || sib is h.Text) out.add(sib);
+  }
+  return out;
+}
 
 List<dynamic> _childrenOf(dynamic node, String test) {
   final Iterable<h.Node> kids;
@@ -243,7 +279,7 @@ String _stringValue(dynamic node) {
   return '';
 }
 
-final RegExp _numberRe = RegExp(r'^\d+$');
+final RegExp _numberRe = RegExp(r'^-?\d+$');
 
 bool _evalPredicate(String predicate, dynamic node, int pos, int size) {
   final p = predicate.trim();
@@ -262,6 +298,9 @@ bool _evalPredicate(String predicate, dynamic node, int pos, int size) {
     // 超出 int 的位置谓词不可能命中任何节点；int.parse 会抛，异常不属于 UnsupportedXPath，
     // 会让整条规则从"匹配为空"升级成"解析中断"
     if (n == null) return false;
+    // 负数按 Legado 习惯当倒数（`[-1]`=最后一个）；越界出空，不钳到首元素——
+    // 目录取错条目比取不到更难被发现
+    if (n < 0) return pos == size + n + 1;
     return pos == n;
   }
   if (p == 'last()') return pos == size;
@@ -298,8 +337,15 @@ bool _evalPredicate(String predicate, dynamic node, int pos, int size) {
 
   final cmp = _splitComparison(p);
   if (cmp != null) {
-    final lhs = _resolve(cmp[0], node, predicate);
     final rhs = _literal(cmp[2], predicate);
+    // `[text()='v']`：XPath 1.0 比较的是「任一直接文本子节点」，整段 text() 在
+    // 混合内容下永远比不中（真实源 `//p[text()='总字数']/span/text()`）。
+    // 保留原来的整段相等作为兜底，避免纯文本节点写法的既有行为收窄。
+    if (cmp[0] == 'text()' && node is h.Element) {
+      final eq = _textNodeMatches(node, rhs);
+      return cmp[1] == '!=' ? !eq : eq;
+    }
+    final lhs = _resolve(cmp[0], node, predicate);
     final eq = lhs == rhs;
     return cmp[1] == '!=' ? !eq : eq;
   }
@@ -314,6 +360,16 @@ bool _evalPredicate(String predicate, dynamic node, int pos, int size) {
 }
 
 bool _isCall(String p) => RegExp(r'^(contains|starts-with)\s*\(').hasMatch(p.trim());
+
+/// `[text()='v']`：任一直接文本子节点（空白规整后）等于 v，或整个元素文本等于 v。
+String _norm(String s) => s.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+bool _textNodeMatches(h.Element el, String rhs) {
+  final want = _norm(rhs);
+  if (want.isEmpty) return false;
+  if (el.nodes.whereType<h.Text>().any((t) => _norm(t.text) == want)) return true;
+  return _norm(_stringValue(el)) == want;
+}
 
 /// 在引号与括号之外找 `!=` / `=`，切成 [左, 运算符, 右]；没有则 null。
 List<String>? _splitComparison(String p) {
