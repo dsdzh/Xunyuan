@@ -70,6 +70,15 @@ void main() {
       );
     });
 
+    /// 缺 scheme 的书源写法（`www.a.com/book/{key}`）与相对地址不是"别的协议"，
+    /// 闸门不能把它们报成协议问题
+    test('缺 scheme 的地址不算协议违规', () async {
+      await expectLater(
+        HttpClient.instance.get('127.0.0.1:1/x'),
+        throwsA(isNot(isA<UnsupportedUrlException>())),
+      );
+    });
+
     test('异常信息只报协议名，不整段回显地址', () {
       expect(UnsupportedUrlException('file:///secret/dir/private.json').toString(),
           contains('file://'));

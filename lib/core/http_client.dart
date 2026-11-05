@@ -104,14 +104,18 @@ class HttpClient {
   static const maxResponseBytes = 20 * 1024 * 1024;
 
   /// 只放行 http/https。书源规则与页面里的链接都是不可信输入，
-  /// `file://` / `data:` 交给 dio 会抛 UnsupportedError（不属于 DioException，
-  /// 绕过了所有 `on DioException` 分支），协议白名单必须在出口处挡死。
-  static final RegExp _httpSchemeRe = RegExp(r'^https?://', caseSensitive: false);
-
+  /// `file://` / `data:` / `javascript:` 交给 dio 会抛 UnsupportedError
+  /// （不属于 DioException，绕过了所有 `on DioException` 分支），协议白名单必须在出口处挡死。
   static void _requireHttpUrl(String url) {
-    if (!_httpSchemeRe.hasMatch(url.trim())) {
-      throw UnsupportedUrlException(url);
-    }
+    final t = url.trim();
+    final colon = t.indexOf(':');
+    // 没有冒号、或冒号前带点/斜杠的（`www.a.com:8080/x` 这种缺 scheme 的写法）都不算协议，
+    // 那是书源自己的常见形态，别报成"协议违规"
+    if (colon <= 0) return;
+    final scheme = t.substring(0, colon).toLowerCase();
+    if (scheme.contains('.') || scheme.contains('/')) return;
+    if (scheme == 'http' || scheme == 'https') return;
+    throw UnsupportedUrlException(t);
   }
 
   /// header 名按 RFC 7230 的 token 字符集校验，值不许带 CR/LF。
