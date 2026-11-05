@@ -122,46 +122,16 @@ void main() {
     expect(state.healthChecking, false);
   });
 
-  test('一轮检测跑完留下「有 N 个不可用」的一次性提示', () async {
+  test('一轮检测跑完只记结果，一条源都不动', () async {
     await setUpState(levels: {
       'https://a/1': HealthLevel.dead,
       'https://b/2': HealthLevel.dead,
       'https://c/3': HealthLevel.searchOnly,
     });
     await state.checkHealth([src('https://a/1'), src('https://b/2'), src('https://c/3')]);
-    expect(state.takeUnusableNotice(), -1); // 还在跑，不能提前提示
-
     release.complete();
     await waitIdle();
-    expect(state.unusableSources.length, 2); // 「仅搜索」不算不可用
-    expect(state.takeUnusableNotice(), 2); // 数字与 unusableSources 同口径
-    expect(state.takeUnusableNotice(), -1); // 取过即清，不会每次刷新都弹
-  });
-
-  test('整轮没有死源就不提示', () async {
-    await setUpState(levels: {'https://a/1': HealthLevel.ok, 'https://b/2': HealthLevel.tocNoContent});
-    await state.checkHealth([src('https://a/1'), src('https://b/2')]);
-    release.complete();
-    await waitIdle();
-    expect(state.takeUnusableNotice(), -1);
-  });
-
-  test('什么都没探测成就不提示：一条结果都没记下，谈不上「测到不可用」', () async {
-    await setUpState(levels: {'https://a/1': HealthLevel.dead});
-    await state.checkHealth([]); // 空目标直接返回
-    expect(state.takeUnusableNotice(), -1);
-  });
-
-  test('单源重测跑完也提示，数字含上一轮遗留的死源', () async {
-    await setUpState(levels: {'https://a/1': HealthLevel.dead, 'https://b/2': HealthLevel.dead});
-    await state.checkHealth([src('https://a/1'), src('https://b/2')]);
-    release.complete();
-    await waitIdle();
-    expect(state.takeUnusableNotice(), 2);
-
-    started.clear();
-    await state.checkHealth([src('https://a/1')]); // 探测门已开，这一轮立刻跑完
-    await waitIdle();
-    expect(state.takeUnusableNotice(), 2); // a 重测仍死，b 的死记录还在 → 该删的还是 2 个
+    expect(state.unusableSources.length, 2); // 「仅搜索」不算不可用，口径照旧
+    expect(state.sources.length, 4); // 检测本身绝不删源
   });
 }

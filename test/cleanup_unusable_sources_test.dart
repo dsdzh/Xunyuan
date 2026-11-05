@@ -12,6 +12,13 @@ import 'package:xunyuan/pages/source_page.dart';
 import 'package:xunyuan/services/storage_service.dart';
 import 'package:xunyuan/state/app_state.dart';
 
+/// 一律判死的假探测器：用来在测试里把「一轮检测跑完」这个时机踩实
+class _DeadChecker extends SourceHealthChecker {
+  @override
+  Future<SourceHealth> check(BookSource s) async =>
+      SourceHealth(HealthLevel.dead, 10, '假检测', DateTime.now().millisecondsSinceEpoch);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -20,8 +27,9 @@ void main() {
   /// [searchUrl] 给默认值：没有可跑规则的源本身就落在"不可用"里，
   /// 想让某条留在列表里就得给它一条真能发请求的规则。传 '' 才当"没规则"。
   Future<void> setUpSources(
-    Map<String, ({bool enabled, String searchUrl, Map<String, dynamic>? health})> bySource,
-  ) async {
+    Map<String, ({bool enabled, String searchUrl, Map<String, dynamic>? health})> bySource, {
+    SourceHealthChecker Function()? checker,
+  }) async {
     final dir = await Directory.systemTemp.createTemp('deadsrc');
     addTearDown(() async {
       await Hive.close();
@@ -46,7 +54,7 @@ void main() {
         await StorageService.instance.putSourceHealth(e.key, e.value.health!);
       }
     }
-    state = SourceState();
+    state = SourceState(checkerFactory: checker);
     await state.load();
   }
 
@@ -221,5 +229,43 @@ void main() {
     await tester.pump(const Duration(milliseconds: 600));
     expect(state.sources.length, 4);
     expect(state.unusableSources.length, 3);
+  });
+
+  testWidgets('检测跑完不自动弹「删除 N 个不可用书源？」，删除只从菜单走', (tester) async {
+    // 造数据 + 跑完整一轮都要真实事件循环（Hive 写盘 + worker 排空）
+    await tester.runAsync(() => setUpSources(
+          {'https://a/1': src()},
+          checker: () => _DeadChecker(),
+        ));
+    await tester.pumpWidget(MultiProvider(
+      providers: [ChangeNotifierProvider.value(value: state)],
+      child: const MaterialApp(home: SourcePage()),
+    ));
+
+    await tester.runAsync(() async {
+      await state.checkHealth(state.sources);
+      await Future.delayed(const Duration(milliseconds: 150)); // 等 worker 把队列排空
+    });
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(state.healthChecking, false); // 这一轮确实跑完了（过去的代码就在这一步之后弹窗）
+    expect(state.unusableSources.length, 1); // 口径照旧：判死的就是"用不了"
+    expect(find.text('删除 1 个不可用书源？'), findsNothing); // 但不自动弹
+    expect(state.sources.length, 1); // 更一条都不删
+
+    // 菜单里那条手动入口照常能弹
+    await tester.tap(find.byType(PopupMenuButton<String>));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.tap(find.text('删除不可用书源（1）'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('删除 1 个不可用书源？'), findsOneWidget);
+
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(state.sources.length, 1);
   });
 }

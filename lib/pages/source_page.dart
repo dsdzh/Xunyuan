@@ -21,50 +21,15 @@ class SourcePage extends StatefulWidget {
 }
 
 class _SourcePageState extends State<SourcePage> {
-  SourceState? _watched;
-  bool _deadPromptOpen = false;
-
-  /// 只在 build 里查 ModalRoute（InheritedWidget 依赖只能在构建期登记），
-  /// 监听回调读这份缓存值：阅读页/详情页压在上面时不抢弹窗
-  bool _routeIsCurrent = true;
-
   /// 归 State 管，而不是弹窗一关就 dispose：`showDialog` 的 Future 在点下「导入」
   /// 那一刻就完成，退场动画还要再重建弹窗子树若干帧，
   /// 提前释放会让里面的 TextField 用上已 dispose 的 controller（实测直接抛断言）。
   final TextEditingController _urlInput = TextEditingController();
 
   @override
-  void initState() {
-    super.initState();
-    final state = context.read<SourceState>();
-    _watched = state;
-    state.addListener(_onHealthChanged);
-  }
-
-  @override
   void dispose() {
     _urlInput.dispose();
-    _watched?.removeListener(_onHealthChanged);
     super.dispose();
-  }
-
-  /// 一轮健康度检测跑完，若还有不可用的源就当场问一次要不要删。
-  /// 提示位是一次性的（take 过即清），不取就作废——菜单里那条「删除不可用书源（N）」
-  /// 一直看得到条数，没必要攒着等下次进页面再补弹。
-  void _onHealthChanged() {
-    final state = _watched;
-    if (state == null || _deadPromptOpen || !_routeIsCurrent) return;
-    final n = state.takeUnusableNotice();
-    if (n <= 0) return;
-    _deadPromptOpen = true;
-    // notifyListeners 可能正处在遍历监听者的中途，插路由要等本帧画完
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        if (mounted) await _deleteUnusableSources(context, state);
-      } finally {
-        _deadPromptOpen = false;
-      }
-    });
   }
 
   Future<void> _importFromText(BuildContext context, String text) async {
@@ -300,7 +265,6 @@ class _SourcePageState extends State<SourcePage> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<SourceState>();
-    _routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
     return Scaffold(
       appBar: AppBar(
         title: const Text('书源管理'),
