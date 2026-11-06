@@ -32,6 +32,11 @@ class StorageService {
     return next;
   }
 
+  /// 章节缓存的写入顺序（内存态）。hive 的 `keys` 出自内部跳表，是 key 的**字典序**
+  /// 而不是写入顺序，直接 `keys.take(n)` 会永远淘汰同一批"字典序最靠前"的条目——
+  /// 那通常是同一本书的头几章：用户每次回头看第一章都不命中，真正的陈旧数据却长留。
+  final Set<String> _cacheOrder = <String>{};
+
   Future<void> init() async {
     await Hive.initFlutter();
     _boxDir = (await getApplicationDocumentsDirectory()).path;
@@ -39,6 +44,7 @@ class StorageService {
     _books = await _open<String>('books', '书架');
     _cache = await _open<String>('chapter_cache', '章节缓存', salvage: false);
     _settings = await _open<dynamic>('settings', '设置');
+    _cacheOrder.clear(); // 新会话：盒里已有的条目顺序未知，只能靠字典序兜底
   }
 
   Future<Box<T>> _open<T>(String name, String label, {bool salvage = true}) async {
@@ -85,7 +91,9 @@ class StorageService {
         var added = 0, updated = 0, skipped = 0;
         for (final s in incoming) {
           final url = s.bookSourceUrl;
-          if (url.isEmpty) {
+          // 空白也算没有地址：这类源会被写成 hive 键 `"   "`，
+          // 导入 N 条垃圾源会互相覆盖成 1 条，还共用同一条 `health::   ` 记录
+          if (url.trim().isEmpty) {
             skipped++;
             continue;
           }
@@ -270,16 +278,46 @@ class StorageService {
   // 缓存键里拼了整条章节 URL，长度不可控，必须过 boxKeyOf
   String? getCachedChapter(String chapterKey) => _cache.get(boxKeyOf(chapterKey));
 
-  Future<void> putCachedChapter(String chapterKey, String content) async {
-    await _cache.put(boxKeyOf(chapterKey), content);
-    // 简单容量控制：超过 2000 条删最旧一半（hive 无时间戳则按 key 迭代顺序）
-    if (_cache.length > 2000) {
-      final drop = _cache.keys.take(800).toList();
-      await _cache.deleteAll(drop);
+  /// 章节正文与目录共用一个盒，也就共用一条上限：
+  /// 目录单条能到几百 KB，只掐条数的话光看详情页也能把盒撑到几百 MB。
+  static const _cacheCap = 2000;
+  static const _cacheEvict = 800;
+
+  Future<void> _trimCache() async {
+    if (_cache.length <= _cacheCap) return;
+    final drop = <String>{};
+    // 本会话没写过的条目年龄未知，一律当更旧的先淘汰（重启后盒里全是这种，
+    // 只能按字典序补位——宁可淘汰得不准，也不能让盒无界增长）
+    for (final k in _cache.keys) {
+      if (drop.length >= _cacheEvict) break;
+      final s = k.toString();
+      if (!_cacheOrder.contains(s)) drop.add(s);
     }
+    // 剩下的名额按真实写入顺序给，最旧先进
+    for (final k in _cacheOrder) {
+      if (drop.length >= _cacheEvict) break;
+      drop.add(k);
+    }
+    _cacheOrder.removeAll(drop);
+    await _cache.deleteAll(drop);
   }
 
-  Future<void> clearChapterCache() => _cache.clear();
+  void _noteCacheWrite(String key) {
+    _cacheOrder.remove(key); // 重复写同一章要挪到队尾，否则会被当最旧的先淘汰
+    _cacheOrder.add(key);
+  }
+
+  Future<void> putCachedChapter(String chapterKey, String content) async {
+    final key = boxKeyOf(chapterKey);
+    await _cache.put(key, content);
+    _noteCacheWrite(key);
+    await _trimCache();
+  }
+
+  Future<void> clearChapterCache() async {
+    _cacheOrder.clear();
+    await _cache.clear();
+  }
 
   // ---------- 目录缓存 ----------
   static String _tocKey(String tocUrl) => boxKeyOf('toc::$tocUrl');
@@ -294,10 +332,12 @@ class StorageService {
     return null;
   }
 
-  Future<void> putCachedToc(String tocUrl, List<Chapter> chapters) =>
-      _cache.put(_tocKey(tocUrl), jsonEncode(chapters.map((c) => c.toJson()).toList()));
-
-  Future<void> removeCachedToc(String tocUrl) => _cache.delete(_tocKey(tocUrl));
+  Future<void> putCachedToc(String tocUrl, List<Chapter> chapters) async {
+    final key = _tocKey(tocUrl);
+    await _cache.put(key, jsonEncode(chapters.map((c) => c.toJson()).toList()));
+    _noteCacheWrite(key);
+    await _trimCache();
+  }
 
   // ---------- 设置 ----------
   dynamic setting(String key, {dynamic def}) => _settings.get(key) ?? def;

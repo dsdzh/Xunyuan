@@ -249,13 +249,18 @@ class ShelfState extends ChangeNotifier {
     await load();
   }
 
-  Future<void> updateProgress(String key, int chapterIndex, String chapterTitle, double progress, double chapterProgress,
+  /// [chapterProgress] 是章内进度（0~1）。整本进度 `readProgress` 由它和总章数算出来，
+  /// 别把章内比例直接当整本进度落库——那两个字段语义不同，读的一侧早晚会踩。
+  Future<void> updateProgress(String key, int chapterIndex, String chapterTitle, double chapterProgress,
       {int? tocCount}) async {
     final book = StorageService.instance.getBook(key);
     if (book == null) return;
+    final total = tocCount ?? (book['tocCount'] as num?)?.toInt();
     book['durChapterIndex'] = chapterIndex;
     book['durChapterTitle'] = chapterTitle;
-    book['readProgress'] = progress;
+    book['readProgress'] = (total == null || total <= 0)
+        ? 0.0
+        : ((chapterIndex + chapterProgress) / total).clamp(0.0, 1.0);
     book['durChapterProgress'] = chapterProgress;
     // 书架"第 x/y 章"进度需要总章数：此前从未落库，导致该段永远不显示
     if (tocCount != null) book['tocCount'] = tocCount;
@@ -296,7 +301,7 @@ class ShelfState extends ChangeNotifier {
         StorageService.bookKey('${entry['name'] ?? ''}', '${entry['author'] ?? ''}', '${entry['sourceUrl'] ?? ''}');
     entry['key'] = key;
     if (StorageService.instance.getBook(key) != null) {
-      await updateProgress(key, chapterIndex, chapterTitle, chapterProgress, chapterProgress, tocCount: tocCount);
+      await updateProgress(key, chapterIndex, chapterTitle, chapterProgress, tocCount: tocCount);
       final refreshed = StorageService.instance.getBook(key);
       // 期间可能被别处删除，取不到就沿用手上的 entry
       if (refreshed != null) entry = refreshed;

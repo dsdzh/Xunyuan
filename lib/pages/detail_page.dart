@@ -254,7 +254,10 @@ class _DetailPageState extends State<DetailPage> {
 }
 
 class StorageKeys {
-  static String keyOf(BookDetail d) => '${d.name}|${d.author}|${d.sourceUrl}';
+  /// 必须与 `addFromDetail` 用的是同一个身份：那边过 `bookKey`（长键会折成 sha1），
+  /// 这里少这一步的话，书名+作者+源地址超 255 字节的书在浏览记录里会留下两条身份不同的重复行。
+  static String keyOf(BookDetail d) =>
+      StorageService.bookKey(d.name, d.author, d.sourceUrl);
 }
 
 class ExpandableText extends StatefulWidget {

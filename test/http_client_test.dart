@@ -36,6 +36,43 @@ void main() {
     expect(jar.headerFor('https://a.example.com/'), isEmpty);
   });
 
+  /// 只看 1970 的话，`Expires=Wed, 09 Jun 2021 10:18:14 GMT` 这种早已过期的会话
+  /// Cookie 会被当成永久凭据一直重放，服务端按过期票据处理反而认不出登录态
+  test('CookieJar：任何早于当前时刻的 Expires 都是删除指令', () {
+    final jar = CookieJar();
+    jar.storeFrom('https://a.example.com/', ['tok=live']);
+    jar.storeFrom('https://a.example.com/',
+        ['tok=dead; Expires=Wed, 09 Jun 2021 10:18:14 GMT']);
+    expect(jar.headerFor('https://a.example.com/'), isEmpty);
+  });
+
+  test('CookieJar：还没到期的 Expires 必须留着，日期格式看不懂也当未过期', () {
+    final jar = CookieJar();
+    jar.storeFrom('https://a.example.com/', ['sid=keep; Expires=Wed, 09 Jun 2038 10:18:14 GMT']);
+    expect(jar.headerFor('https://a.example.com/'), contains('sid=keep'));
+    jar.storeFrom('https://b.example.com/', ['sid=odd; Expires=某个奇怪的写法']);
+    expect(jar.headerFor('https://b.example.com/'), contains('sid=odd'));
+  });
+
+  test('CookieJar：Secure cookie 不在明文 http 上重放', () {
+    final jar = CookieJar();
+    jar.storeFrom('https://a.example.com/', ['sid=v; Secure; Path=/']);
+    expect(jar.headerFor('https://a.example.com/x'), contains('sid=v'));
+    expect(jar.headerFor('http://a.example.com/x'), isEmpty);
+    // 普通 cookie 两边都给，别把老站的登录态一起掐了
+    jar.storeFrom('https://c.example.com/', ['sid=plain']);
+    expect(jar.headerFor('http://c.example.com/x'), contains('sid=plain'));
+  });
+
+  test('CookieJar：主机数封顶，扫站的站不会把内存撑到无界', () {
+    final jar = CookieJar();
+    for (var i = 0; i < 600; i++) {
+      jar.storeFrom('https://h$i.example.com/', ['sid=$i']);
+    }
+    expect(jar.headerFor('https://h599.example.com/'), contains('sid=599'));
+    expect(jar.headerFor('https://h0.example.com/'), isEmpty);
+  });
+
   group('出站请求的出口闸门', () {
     test('sanitizeHeaders：非法名与带 CR/LF 的值一律丢，合法项原样保留', () {
       expect(

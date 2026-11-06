@@ -57,7 +57,7 @@ class RuleEngine {
   /// 返回"节点"列表（元素 Element 或字符串或原始 json 值），供上层逐条抽取字段。
   static List<dynamic> getElements(String content, String rule, {bool isJson = false}) {
     if (rule.trim().isEmpty) {
-      return isJson ? [if (content.isNotEmpty) _tryJson(content)] : _parseHtml(content).body!.nodes;
+      return isJson ? [if (content.isNotEmpty) tryJson(content)] : _parseHtml(content).body!.nodes;
     }
     return _analyze(content, rule, nodes: true, isJson: isJson);
   }
@@ -74,12 +74,27 @@ class RuleEngine {
   static String? _lastHtmlSrc;
   static h.Document? _lastHtmlDoc;
 
-  static dynamic _tryJson(String content) {
-    try {
-      return jsonDecode(content);
-    } catch (_) {
-      return null;
+  static String? _lastJsonSrc;
+  static dynamic _lastJsonVal;
+  static bool _jsonCached = false;
+
+  /// 与 `_parseHtml` 同一条单条目缓存：一份 JSON 正文在一条链路上会被解码多次
+  /// （`isJsonContent` 判类型 + 每次取字段 + `;;`/`&&` 递归），20MB 的上限下这是纯重复开销。
+  /// 解码失败也照样缓存（`null` 就是结果），否则非 JSON 正文每次都要重试一遍。
+  static dynamic tryJson(String content) {
+    if (_jsonCached && (identical(content, _lastJsonSrc) || content == _lastJsonSrc)) {
+      return _lastJsonVal;
     }
+    dynamic v;
+    try {
+      v = jsonDecode(content);
+    } catch (_) {
+      v = null;
+    }
+    _lastJsonSrc = content;
+    _lastJsonVal = v;
+    _jsonCached = true;
+    return v;
   }
 
   /// 核心规则解析。返回元素/字符串混合列表。
@@ -307,10 +322,7 @@ class RuleEngine {
     });
   }
 
-  static dynamic _asJsonValue(String content) {
-    final v = _tryJson(content);
-    return v;
-  }
+  static dynamic _asJsonValue(String content) => tryJson(content);
 
   /// 拆分顶层分隔符（跳过引号内的部分）。
   /// 引号不配对（奇数个）时视为规则里的普通字符，按纯深度拆分，避免状态机吞掉分隔符。
@@ -1239,15 +1251,12 @@ class RuleEngine {
 class ContentAnalyzer {
   /// 判断响应内容是否 JSON：仅看首字符会把 `[第一卷]` 开头的纯文本章节误判
   /// 成 JSON 导致正文为空，必须实际解码成功才算。
+  /// 解码走 `RuleEngine.tryJson` 的缓存，与后面取字段那次共用一份结果。
   static bool isJsonContent(String body) {
     final t = body.trimLeft();
     if (!t.startsWith('{') && !t.startsWith('[')) return false;
-    try {
-      jsonDecode(t);
-      return true;
-    } catch (_) {
-      return false;
-    }
+    // 能解码成 null 的文本不可能以 { 或 [ 开头，所以 null 就是"不是 JSON"
+    return RuleEngine.tryJson(t) != null;
   }
 }
 

@@ -26,3 +26,14 @@ Future<Directory> initTempStorage(String tag) async {
   });
   return dir;
 }
+
+/// 对同一目录再 init 一次 = 模拟"杀进程重启"：内存态（例如缓存的写入顺序记录）
+/// 作废，盒里的数据原样留着。
+Future<void> reopenTempStorage(Directory dir) async {
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(
+    const MethodChannel('plugins.flutter.io/path_provider'),
+    (call) async => dir.path,
+  );
+  await StorageService.instance.init();
+}

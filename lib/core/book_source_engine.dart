@@ -91,73 +91,16 @@ class BookSourceEngine {
     return HttpClient.sanitizeHeaders(pairs);
   }
 
-  /// 凭证类 header 的名字特征：Cookie/Authorization 之外，
-  /// 一批 API 型书源把令牌写成 `X-Token`、`auth`、`sessionId` 之类，名字里都带这些词。
-  static final RegExp _credentialNameRe =
-      RegExp(r'cookie|authorization|token|session|auth|key|secret', caseSensitive: false);
-
   /// 发往 `url` 的那一发请求实际能带的 header。
   /// 书源 header 里的登录态属于这本书源所在的站点：搜索结果/正文里的链接是页面内容，
   /// 敌意页面写一个 `https://attacker.com/x` 就能把用户的起点 Cookie 收走，
   /// 所以跨站（不同注册域）只保留 UA/Referer 这类无凭证头。
+  /// 口径与重定向逐跳共用 `UrlPolicy`，两边不一致就等于没防。
   Map<String, String> headersFor(String url, {Map<String, String> extra = const {}}) {
     final merged = HttpClient.sanitizeHeaders({...headers, ...extra});
-    if (_sameSiteAsSource(url)) return merged;
-    merged.removeWhere((k, v) => _credentialNameRe.hasMatch(k));
-    return merged;
+    if (UrlPolicy.sameSite(source.bookSourceUrl, url)) return merged;
+    return UrlPolicy.stripCredentials(merged);
   }
-
-  /// 目标地址与书源主页是否同属一个注册域（qidian.com 与 m.qidian.com 算同站，
-  /// com.cn / co.jp 这类二级公有后缀多取一段）。书源地址解析不出主机时不设限，
-  /// 免得把老书源整批判成跨站、连带把 UA/Referer 也丢了。
-  bool _sameSiteAsSource(String url) {
-    final a = _siteOf(Uri.tryParse(source.bookSourceUrl)?.host ?? '');
-    if (a.isEmpty) return true;
-    final b = _siteOf(Uri.tryParse(url.trim())?.host ?? '');
-    if (b.isEmpty) return true;
-    return a == b;
-  }
-
-  static String _siteOf(String host) {
-    final h = host.trim().toLowerCase();
-    if (h.isEmpty) return '';
-    // IP（含 v6）没有注册域概念，整串比
-    if (h.contains(':') || RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(h)) return h;
-    final labels = h.split('.');
-    if (labels.length <= 2) return h;
-    final tail2 = labels.sublist(labels.length - 2).join('.');
-    final take = _twoLevelSuffixes.contains(tail2) ? 3 : 2;
-    if (labels.length < take) return h;
-    return labels.sublist(labels.length - take).join('.');
-  }
-
-  /// 常见的二级公有后缀：这些后面那段才是"域名"，多取一级才不会把 a.co.uk 与 b.co.uk 当同站
-  static const Set<String> _twoLevelSuffixes = {
-    'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
-    'com.hk', 'org.hk', 'idv.hk',
-    'com.tw', 'org.tw', 'idv.tw',
-    'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
-    'co.uk', 'org.uk', 'ac.uk', 'me.uk', 'gov.uk',
-    'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au',
-    'co.nz', 'net.nz', 'org.nz',
-    'co.in', 'net.in', 'org.in', 'gen.in',
-    'co.kr', 'or.kr', 'ne.kr', 're.kr', 'pe.kr', 'go.kr',
-    'com.br', 'net.br', 'org.br',
-    'com.sg', 'net.sg', 'org.sg', 'edu.sg', 'gov.sg',
-    'com.my', 'net.my', 'org.my', 'edu.my', 'gov.my',
-    'co.za', 'org.za', 'net.za', 'web.za',
-    'com.ru', 'net.ru', 'org.ru', 'pp.ru',
-    'com.ua', 'in.ua', 'kiev.ua',
-    'com.tr', 'org.tr', 'net.tr',
-    'com.mx', 'org.mx', 'gob.mx',
-    'com.ar', 'net.ar',
-    'com.pl', 'net.pl', 'org.pl',
-    'com.vn', 'net.vn', 'org.vn',
-    'com.ph', 'net.ph', 'org.ph',
-    'co.il', 'org.il', 'net.il',
-    'com.pe', 'net.pe', 'gob.pe',
-    'co.id', 'web.id', 'or.id',
-  };
 
   /// 单引号伪 JSON：按字符串对逐对取出，键名顺带脱掉残留的引号
   static Map<String, String> _lenientJsonPairs(String s) {
@@ -689,7 +632,9 @@ class BookSourceEngine {
   Future<PageResponse> _check(Future<PageResponse> f) async {
     final resp = await f;
     if (resp.statusCode >= 400) {
-      throw Exception('HTTP ${resp.statusCode}：站点拒绝或页面不存在（${resp.url}）');
+      // 这里的 URL 会被健康度检测原样写进 hive、并显示在书源页/详情页上。
+      // 拒绝的常常是带 ?code=/?token= 的跳转目标，只留 scheme://host/path。
+      throw Exception('HTTP ${resp.statusCode}：站点拒绝或页面不存在（${UrlPolicy.displayUrl(resp.url)}）');
     }
     return resp;
   }
